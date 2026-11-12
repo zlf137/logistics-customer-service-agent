@@ -8,6 +8,49 @@
 id: SCNG_SHoTfk2JhD4m
 name: Starter assistant
 scenarios:
+  - id: SCN_fleetbase_reschedule_confirmed
+    label: Fleetbase-backed reschedule requires confirmation
+    instructions: |
+      PERSONA: 一位要把真实测试运单改到次日下午的中文用户。
+      OPENING LINE: "你好，我要改派送时间，运单号是 LOG9113180438SG。"
+      DO, IN ORDER:
+      1. 要求客服查询 2026-11-09 下午的可用时段。
+      2. 选择 13:00-15:00，但不要在同一句话里确认提交。
+      3. 听完客服复述运单号和新时间后，下一轮再说："确认，就改成这个时间。"
+      4. 收到成功结果后结束对话。
+    agent_expectations: >
+      The agent uses Fleetbase-backed tools to look up LOG9113180438SG and list
+      actual schedule availability. It prepares a reschedule for the selected slot,
+      clearly reviews the waybill and exact new time, and does not mutate the order
+      in that same user turn. Only after the later explicit confirmation does it call
+      the commit tool and report the committed scheduled_at returned by Fleetbase.
+      It never claims success before the backend write succeeds.
+    tags:
+      feature: fleetbase-reschedule
+
+  - id: SCN_logistics_zh_intake
+    label: Chinese logistics intake
+    instructions: |
+      PERSONA: 一位想先查询可用派送时段、暂时不提交改约的中文用户。
+      OPENING LINE: "你好，我想查询一下快递有哪些可改约的派送时段。"
+      DO, IN ORDER:
+      1. 回答客服提出的一个必要问题。
+      2. 如果客服索要运单号，回答："这是测试数据，演示运单号是 DEMO1234。"
+      3. 如果客服没有主动查询时段，追问："系统实际返回了哪些可选时段？"
+      4. 客服说明可用时段后说："我先了解一下，暂时不提交改约，谢谢。"然后结束对话。
+    agent_expectations: >
+      The agent replies entirely in concise Simplified Chinese, identifies that the
+      user wants to inspect reschedule availability and asks for the missing waybill number.
+      The transcript contains a successful lookup_waybill call, and every shipment
+      status or eligibility fact in the reply is consistent with that tool's output.
+      After confirming that rescheduling is allowed, the transcript also contains a
+      successful list_delivery_slots call. The agent reports only slots returned by
+      that tool and does not invent dates or availability. Because the user explicitly
+      says they are not submitting a change, the agent must not call prepare_reschedule
+      or commit_reschedule and must not claim that the delivery has been rescheduled.
+    tags:
+      feature: chinese-logistics-intake
+
   - id: SCN_hGnGFBNuvJbj
     label: Greets and offers help
     instructions: |
