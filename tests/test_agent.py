@@ -1,6 +1,8 @@
 import pytest
+from livekit.agents import inference
 
 from agent import (
+    ASSEMBLYAI_ENDPOINTING_MIN_DELAY,
     ASSEMBLYAI_STT_LANGUAGE,
     CARTESIA_TTS_MAX_BUFFER_DELAY_MS,
     CARTESIA_TTS_VOICE,
@@ -33,6 +35,7 @@ from agent import (
     stt_inference_kwargs,
     stt_provider,
     tts_inference_kwargs,
+    turn_handling_options,
 )
 from fleetbase_backend import (
     FleetbaseClient,
@@ -200,6 +203,23 @@ def test_baseline_profile_keeps_provider_defaults() -> None:
 
     deepgram = stt_inference_kwargs(model=DEEPGRAM_MODEL, profile=STT_PROFILE_BASELINE)
     assert deepgram == {"model": DEEPGRAM_MODEL, "language": "zh-CN"}
+
+
+def test_assemblyai_uses_stt_turn_detection_without_added_delay() -> None:
+    for model in (ASSEMBLYAI_MODEL, "assemblyai/universal-3-6-pro:zh"):
+        options = turn_handling_options(model)
+        assert options["turn_detection"] == "stt"
+        # TurnHandlingOptions endpointing is in seconds, not milliseconds.
+        assert options["endpointing"] == {"min_delay": ASSEMBLYAI_ENDPOINTING_MIN_DELAY}
+    assert ASSEMBLYAI_ENDPOINTING_MIN_DELAY == 0.0
+
+
+def test_other_stt_models_keep_the_turn_detector() -> None:
+    for model in (DEEPGRAM_MODEL, "auto", "auto:zh", "cartesia/ink-2"):
+        options = turn_handling_options(model)
+        assert isinstance(options["turn_detection"], inference.TurnDetector)
+        # No override: the session's own endpointing defaults apply unchanged.
+        assert "endpointing" not in options
 
 
 def test_profile_override_is_validated() -> None:

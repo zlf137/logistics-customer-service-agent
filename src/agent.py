@@ -92,6 +92,13 @@ STT_MAX_TURN_SILENCE_MS = 1500
 STT_CONTINUOUS_PARTIALS = True
 STT_INTERRUPTION_DELAY_MS = 250
 
+# Turn handling follows the configured STT model. AssemblyAI Universal-3.6 Pro
+# emits its own end-of-turn signal from its transcript/utterance model, so the
+# session lets STT commit the turn instead of running the LiveKit TurnDetector.
+# The value is in seconds (TurnHandlingOptions), unlike AssemblyAI's millisecond
+# min_turn_silence/max_turn_silence, which still govern finalisation.
+ASSEMBLYAI_ENDPOINTING_MIN_DELAY = 0.0
+
 # Deepgram Nova-3 settings (rollback / A-B option).
 # Deepgram's own defaults already match most of these; sending them explicitly
 # pins the behaviour rather than trusting provider defaults to stay put.
@@ -282,6 +289,27 @@ def stt_inference_kwargs(
     if extra:
         kwargs["extra_kwargs"] = extra
     return kwargs
+
+
+def turn_handling_options(model: str = STT_MODEL) -> TurnHandlingOptions:
+    """Turn handling for ``model``; the single place turn detection is chosen.
+
+    AssemblyAI Universal-3.6 Pro publishes its own end-of-turn signal from the
+    transcript it returns, so ``turn_detection="stt"`` lets that signal commit
+    the user's turn. ``min_delay=0`` stops LiveKit from adding a second wait on
+    top of AssemblyAI's endpointing; the AssemblyAI ``min_turn_silence`` and
+    ``max_turn_silence`` values still decide when the provider finalises.
+
+    Every other provider keeps the LiveKit TurnDetector and its own endpointing
+    defaults, so the Deepgram rollback behaves exactly as before.
+    """
+
+    if stt_provider(model) == "assemblyai":
+        return TurnHandlingOptions(
+            turn_detection="stt",
+            endpointing={"min_delay": ASSEMBLYAI_ENDPOINTING_MIN_DELAY},
+        )
+    return TurnHandlingOptions(turn_detection=inference.TurnDetector())
 
 
 STT_PROFILE = resolve_stt_profile()
@@ -611,7 +639,7 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using the configured STT/TTS models and the LiveKit turn detector
+    # Set up a voice AI pipeline using the configured STT/TTS models and provider-aware turn handling
     session = AgentSession[LogisticsSessionState](
         userdata=LogisticsSessionState(),
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
@@ -629,14 +657,13 @@ async def my_agent(ctx: JobContext):
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
         tts=inference.TTS(**tts_inference_kwargs()),
+        # Turn handling is provider-aware. AssemblyAI Universal-3.6 Pro commits the
+        # turn from its own end-of-turn signal with no added endpointing delay;
+        # the Deepgram rollback and other models keep the LiveKit TurnDetector.
+        # See more at https://docs.livekit.io/agents/build/turns
         turn_handling=TurnHandlingOptions(
-            # The LiveKit turn detector determines when the user is done speaking and the agent should respond.
-            # TurnDetector is an end-of-turn model that listens to the user's audio directly, combining
-            # semantic understanding with acoustic cues (intonation, pitch, rhythm) for state-of-the-art accuracy.
-            # AgentSession supplies the required VAD automatically.
-            # See more at https://docs.livekit.io/agents/build/turns
-            turn_detection=inference.TurnDetector(),
-            # Adaptive interruptions use the turn detector to tell a real interruption from a
+            **turn_handling_options(),
+            # Adaptive interruptions tell a real interruption from a
             # backchannel like "mhm" or "right", so the agent keeps talking through the latter.
             # This model is on by default on LiveKit Cloud and in dev mode. To use the model elsewhere,
             # uncomment the `interruption` line. Self-hosted usage past the monthly allowance is billed.

@@ -16,7 +16,7 @@ The starter includes:
   - [Realtime models](https://docs.livekit.io/agents/models/realtime/) such as OpenAI GPT-Live. Many other models are available through the [plugin ecosystem](https://docs.livekit.io/agents/models/#plugins).
 - [Expressive mode](https://docs.livekit.io/agents/models/tts/expressive/) support, disabled by default in this project so the agent's voice carries no model-inserted emotion or `<break>` markup; see [TTS configuration and rollback](#tts-configuration-and-rollback).
 - [Keyterms](https://docs.livekit.io/agents/models/stt/keyterms/), on by default, so speech recognition gets your names, brands, and jargon right, including names it picks up during the conversation, like a caller's.
-- [LiveKit Turn Detector](https://docs.livekit.io/agents/logic/turns/turn-detector/), which knows when the user has finished speaking, in 14 languages.
+- Provider-aware turn handling: the default AssemblyAI STT supplies its own end-of-turn signal (`turn_detection="stt"` with no added endpointing delay), while the [LiveKit Turn Detector](https://docs.livekit.io/agents/logic/turns/turn-detector/) is retained for the Deepgram rollback and other models.
 - [Adaptive interruption handling](https://docs.livekit.io/agents/logic/turns/adaptive-interruption-handling/), which tells a real interruption from an "uh-huh" or background noise, so your agent doesn't stop talking when it shouldn't.
 - [Background voice cancellation](https://docs.livekit.io/transport/media/noise-cancellation/).
 - Session transcripts, traces, and recordings from LiveKit [Agent Observability](https://docs.livekit.io/testing/observability/).
@@ -186,6 +186,34 @@ dict, so acceptance is decided server-side. If a live session fails at start wit
 an unknown-option error, remove only the rejected key(s) from
 `assemblyai_extra_kwargs` and restart — the other accuracy options are
 independent.
+
+### Turn handling follows the STT provider
+
+`src/agent.py` builds `TurnHandlingOptions` from one testable helper,
+`turn_handling_options()`, which switches on the configured STT model:
+
+| STT model | `turn_detection` | `endpointing.min_delay` | Why |
+|-----------|------------------|-------------------------|-----|
+| AssemblyAI Universal-3.6 Pro (default) | `"stt"` | `0` seconds | AssemblyAI already emits its own end-of-turn signal from the transcript it returns. STT turn detection lets that signal commit the turn, and a zero minimum delay stops LiveKit from adding a second wait on top of the provider's endpointing. |
+| Deepgram Nova-3 rollback and other providers | `inference.TurnDetector()` | Session default (0.3 s for the streaming detector) | Preserves the previous LiveKit turn-detector behavior exactly. |
+
+With `turn_detection="stt"`, LiveKit does not run the turn-detector model; it
+commits the user turn when the STT reports `END_OF_SPEECH`. The AssemblyAI
+`min_turn_silence` (500 ms) and `max_turn_silence` (1500 ms) options are
+unchanged: they still decide when the provider finalises a transcript and emits
+that end-of-turn event. Note the units differ — `endpointing.min_delay` is in
+seconds, while the AssemblyAI silence options are in milliseconds.
+
+Text simulations commit turns as text, so this setting only affects audio
+sessions.
+
+Unit tests pin the provider-to-mode selection. In a local audio-debugger A/B
+with the same three synthesized, deliberately paused 8-digit waybill turns,
+both configurations transcribed 3/3 completely. Provider-aware handling removed
+the LiveKit EOT prediction and 2.5-second dynamic endpointing path, emitted no
+late-transcript warning, and reduced observed end-to-end latency from roughly
+3.05–4.50 seconds to 2.03–2.62 seconds. This is synthetic evidence; a real
+microphone remains the final acceptance test.
 
 ### Rollback / A-B: Deepgram Nova-3
 
