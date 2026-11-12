@@ -43,15 +43,17 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 load_dotenv(".env.fleetbase.local")
 
-# Default: Deepgram Nova-3 through LiveKit Inference, the mainstream
-# voice-agent path. AssemblyAI stays available as a rollback/A-B option with no
-# code edit: LOGISTICS_STT_MODEL=assemblyai/universal-3-6-pro.
-DEFAULT_STT_MODEL = "deepgram/nova-3-general"
+# Default: AssemblyAI Universal-3.6 Pro through LiveKit Inference with the
+# accuracy profile below. In the 2026-11-12 A/B run it transcribed 3/3 complete
+# synthesized 8-digit waybill samples, versus 2/3 for Deepgram Nova-3. Deepgram
+# stays available as a rollback/A-B option with no code edit:
+# LOGISTICS_STT_MODEL=deepgram/nova-3-general.
+DEFAULT_STT_MODEL = "assemblyai/universal-3-6-pro"
 # Escape hatch for A/B runs; "auto:zh" lets LiveKit pick the provider for Chinese.
 STT_MODEL = os.getenv("LOGISTICS_STT_MODEL", "").strip() or DEFAULT_STT_MODEL
-# Deepgram takes the BCP-47 locale form for Mandarin; AssemblyAI's code for the
-# same language is "zh". The default is therefore resolved per provider in
-# default_stt_language() instead of being hard-coded for every model.
+# AssemblyAI's code for Mandarin is "zh"; Deepgram takes the BCP-47 locale form.
+# The default is therefore resolved per provider in default_stt_language()
+# instead of being hard-coded for every model.
 STT_LANGUAGE = "zh-CN"
 ASSEMBLYAI_STT_LANGUAGE = "zh"
 STT_KEYTERMS = ["物流", "运单号", "派送改约", "12345678", "LOG9113180438SG"]
@@ -64,9 +66,9 @@ STT_PROFILE_BASELINE = "baseline"
 STT_PROFILES = (STT_PROFILE_ACCURACY, STT_PROFILE_BASELINE)
 DEFAULT_STT_PROFILE = STT_PROFILE_ACCURACY
 
-# AssemblyAI accuracy profile (rollback / A-B only). These keys are only valid
-# for AssemblyAI, so they are sent only when the model starts with
-# "assemblyai/". Kept unchanged so reverting needs no code edit.
+# AssemblyAI accuracy profile (the default). These keys are only valid for
+# AssemblyAI, so they are sent only when the model starts with "assemblyai/".
+# Kept unchanged so switching back to the default needs no code edit.
 STT_MODE = "max_accuracy"
 # Keep this short: a few sentences of domain context, including that waybill
 # letters and digits may be spoken one character at a time.
@@ -90,15 +92,17 @@ STT_MAX_TURN_SILENCE_MS = 1500
 STT_CONTINUOUS_PARTIALS = True
 STT_INTERRUPTION_DELAY_MS = 250
 
-# Deepgram Nova-3 mainstream voice-agent settings (the default provider).
+# Deepgram Nova-3 settings (rollback / A-B option).
 # Deepgram's own defaults already match most of these; sending them explicitly
 # pins the behaviour rather than trusting provider defaults to stay put.
-# endpointing is the silence (ms) before a final: Deepgram's 25 ms default
-# finalises almost immediately and fragments short turns, so 300 ms is a
-# conservative starting point, not a tuned value. keyterm uses the same
-# STT_KEYTERMS list as STTContextOptions; the Inference SDK merges the two.
+# endpointing is the silence (ms) before a final: Deepgram's short default can
+# fragment slowly dictated identifiers, so this profile waits longer. Keep
+# no_delay off: Deepgram documents that forcing immediate smart-format
+# finalisation can skip entity formatting, which is especially harmful for
+# waybill numbers. keyterm uses the same STT_KEYTERMS list as
+# STTContextOptions; the Inference SDK merges the two.
 DEEPGRAM_INTERIM_RESULTS = True
-DEEPGRAM_NO_DELAY = True
+DEEPGRAM_NO_DELAY = False
 DEEPGRAM_SMART_FORMAT = True
 DEEPGRAM_NUMERALS = True
 DEEPGRAM_PUNCTUATE = True
@@ -607,7 +611,7 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using Deepgram, Cartesia, and the LiveKit turn detector
+    # Set up a voice AI pipeline using the configured STT/TTS models and the LiveKit turn detector
     session = AgentSession[LogisticsSessionState](
         userdata=LogisticsSessionState(),
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand

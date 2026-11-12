@@ -140,40 +140,18 @@ uv run src/agent.py start
 
 ## Chinese STT configuration
 
-Mandarin is transcribed through LiveKit Inference with **Deepgram Nova-3**
-(`deepgram/nova-3-general`), the mainstream LiveKit voice-agent path: it streams
-interim and final results, supports `zh-CN`, and needs no extra plugin or API key
-through Inference. `src/agent.py` builds the STT call from one pure function,
+Mandarin is transcribed through LiveKit Inference with **AssemblyAI
+Universal-3.6 Pro** (`assemblyai/universal-3-6-pro`) and its accuracy profile.
+`src/agent.py` builds the STT call from one pure function,
 `stt_inference_kwargs()`; provider-specific options are gated by model prefix,
-so Deepgram options are never sent to AssemblyAI and vice versa.
+so AssemblyAI options are never sent to Deepgram and vice versa. Deepgram Nova-3
+stays available as an env-only rollback/A-B option.
 
-### Default: Deepgram Nova-3
+### Default: AssemblyAI Universal-3.6 Pro
 
-| Option | Value | Why |
-|--------|-------|-----|
-| `language` | `zh-CN` | BCP-47 Mandarin locale for Nova-3. |
-| `interim_results` | `true` | Streams interim hypotheses so the console or frontend shows text while the user is still speaking. |
-| `no_delay` | `true` | Returns results as soon as they are ready instead of batching. |
-| `smart_format` | `true` | Formats dates, times, numbers and similar entities for readability. |
-| `numerals` | `true` | Renders spoken numbers as digits, which matters for waybill digits. |
-| `punctuate` | `true` | Adds punctuation to transcripts. |
-| `endpointing` | 800 ms | Silence before a final. Interim text still streams immediately, while the longer finalisation window avoids splitting slowly dictated waybill digits into separate tool calls. |
-| `keyterm` | same list as `STT_KEYTERMS` | Biases logistics terms and the example waybill; the Inference SDK merges `STTContextOptions.keyterms` into the same field. |
-
-Every provider option above except `language` exists in the installed
-`livekit-agents` 1.8.10 `DeepgramOptions` type (`language` is an `inference.STT`
-argument), so this profile carries no unknown-option risk. The model ID and
-`zh-CN` support were checked against current LiveKit docs; the same 1.8.10 model
-literal still lists only `deepgram/nova-3`. If the gateway rejects the model ID
-at session start, set `LOGISTICS_STT_MODEL=deepgram/nova-3` — no code edit
-needed.
-
-### Rollback / A-B: AssemblyAI
-
-`LOGISTICS_STT_MODEL=assemblyai/universal-3-6-pro` restores the previous
-accuracy configuration unchanged. The language switches to `zh` automatically,
-because that is AssemblyAI's code for Mandarin. With the default `accuracy`
-profile it sends these AssemblyAI-only options:
+The language switches to `zh` automatically, because that is AssemblyAI's code
+for Mandarin. With the default `accuracy` profile it sends these
+AssemblyAI-only options:
 
 | Option | Value | Why |
 |--------|-------|-----|
@@ -188,6 +166,52 @@ profile it sends these AssemblyAI-only options:
 `voice_focus` is intentionally not set: RoomIO already applies AI acoustics
 enhancement, and the microphone type is unknown. The two turn-silence values are
 conservative starting points for A/B testing, not tuned values.
+
+**Observed A/B evidence (2026-11-12):** on the same synthesized 8-digit waybill
+samples, AssemblyAI produced a complete transcription for 3/3 samples and
+Deepgram Nova-3 for 2/3. One AssemblyAI sample arrived in two transcript
+segments, but the segments were combined correctly before the Fleetbase lookup,
+so the split did not cause a miss. This is a small, synthesized run, not a
+statistical proof; it is the reason the accuracy profile is the default again,
+with Deepgram kept as a rollback for further comparison.
+
+AssemblyAI notes: the installed `livekit-agents` 1.8.10 type hints mark `prompt`
+as mutually exclusive with `keyterms_prompt`, while current Inference docs list
+both. If a live session reports a gateway error for the combination, drop
+`prompt` from `assemblyai_extra_kwargs` and keep `keyterms_prompt`.
+
+The same 1.8.10 type stubs do not list `min_turn_silence`, `continuous_partials`
+or `interruption_delay`; `extra_kwargs` is forwarded to the gateway as a plain
+dict, so acceptance is decided server-side. If a live session fails at start with
+an unknown-option error, remove only the rejected key(s) from
+`assemblyai_extra_kwargs` and restart — the other accuracy options are
+independent.
+
+### Rollback / A-B: Deepgram Nova-3
+
+`LOGISTICS_STT_MODEL=deepgram/nova-3-general` switches to the mainstream LiveKit
+voice-agent path: it streams interim and final results, supports `zh-CN`, and
+needs no extra plugin or API key through Inference. The language switches to
+`zh-CN` automatically.
+
+| Option | Value | Why |
+|--------|-------|-----|
+| `language` | `zh-CN` | BCP-47 Mandarin locale for Nova-3. |
+| `interim_results` | `true` | Streams interim hypotheses so the console or frontend shows text while the user is still speaking. |
+| `no_delay` | `false` | Lets Smart Format wait for a spoken number to finish; Deepgram warns that forcing immediate finalization can skip entity formatting. |
+| `smart_format` | `true` | Formats dates, times, numbers and similar entities for readability. |
+| `numerals` | `true` | Renders spoken numbers as digits, which matters for waybill digits. |
+| `punctuate` | `true` | Adds punctuation to transcripts. |
+| `endpointing` | 800 ms | Silence before a final. Interim text still streams immediately, while the longer finalisation window avoids splitting slowly dictated waybill digits into separate tool calls. |
+| `keyterm` | same list as `STT_KEYTERMS` | Biases logistics terms and the example waybill; the Inference SDK merges `STTContextOptions.keyterms` into the same field. |
+
+Every provider option above except `language` exists in the installed
+`livekit-agents` 1.8.10 `DeepgramOptions` type (`language` is an `inference.STT`
+argument), so this profile carries no unknown-option risk. The model ID and
+`zh-CN` support were checked against current LiveKit docs; the same 1.8.10 model
+literal still lists only `deepgram/nova-3`. If the gateway rejects the model ID
+at session start, set `LOGISTICS_STT_MODEL=deepgram/nova-3` — no code edit
+needed.
 
 These options change how transcripts are surfaced, not how LiveKit Inference
 retries a provider WebSocket. A reset or retry still costs the reconnect time
@@ -204,14 +228,14 @@ Everything below is read when the process starts, so restart the agent after
 changing a variable. Windows PowerShell:
 
 ```powershell
-# Default: Deepgram Nova-3 with the settings above.
+# Default: AssemblyAI Universal-3.6 Pro with the accuracy profile above.
 lk agent console
 
-# Rollback to AssemblyAI with its accuracy profile; no code edit.
-$env:LOGISTICS_STT_MODEL = "assemblyai/universal-3-6-pro"
+# Rollback / A-B to Deepgram Nova-3; no code edit.
+$env:LOGISTICS_STT_MODEL = "deepgram/nova-3-general"
 lk agent console
 
-# Back to the default Deepgram model.
+# Back to the default AssemblyAI model.
 Remove-Item Env:\LOGISTICS_STT_MODEL
 lk agent console
 
@@ -232,24 +256,11 @@ variable already set in the process environment, so a shell value wins.
 
 Record one fixed set of 5–10 real-microphone utterances per model, including a
 waybill number read digit by digit, a delivery-slot question, and a rescheduling
-request. Run the same recordings against Deepgram Nova-3 and the AssemblyAI
-rollback, then compare the Agent Console transcripts and note missed words,
-wrong digits and premature fragments. **Deepgram accuracy is not verified by
-unit tests, synthetic audio, or the previous AssemblyAI experiments**; a real
-microphone comparison is required before the new default is considered proven,
-and the AssemblyAI rollback stays available until then.
-
-AssemblyAI notes: the installed `livekit-agents` 1.8.10 type hints mark `prompt`
-as mutually exclusive with `keyterms_prompt`, while current Inference docs list
-both. If the first live session reports a gateway error for the combination,
-drop `prompt` from `assemblyai_extra_kwargs` and keep `keyterms_prompt`.
-
-The same 1.8.10 type stubs do not list `min_turn_silence`, `continuous_partials`
-or `interruption_delay`; `extra_kwargs` is forwarded to the gateway as a plain
-dict, so acceptance is decided server-side. If a live session fails at start with
-an unknown-option error, remove only the rejected key(s) from
-`assemblyai_extra_kwargs` and restart — the other accuracy options are
-independent.
+request. Run the same recordings against AssemblyAI and the Deepgram rollback,
+then compare the Agent Console transcripts and note missed words, wrong digits
+and premature fragments. **The 2026-11-12 result above comes from a small
+synthesized sample and does not prove real-microphone accuracy**; keep using the
+Deepgram rollback until a longer real-speaker comparison confirms the default.
 
 ## TTS configuration and rollback
 

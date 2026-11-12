@@ -88,10 +88,11 @@ class FakeFleetbase(FleetbaseClient):
 
 
 ASSEMBLYAI_MODEL = "assemblyai/universal-3-6-pro"
+DEEPGRAM_MODEL = "deepgram/nova-3-general"
 
 
 def test_uses_supported_chinese_speech_models() -> None:
-    assert DEFAULT_STT_MODEL == "deepgram/nova-3-general"
+    assert DEFAULT_STT_MODEL == "assemblyai/universal-3-6-pro"
     assert STT_LANGUAGE == "zh-CN"
     assert ASSEMBLYAI_STT_LANGUAGE == "zh"
     assert STT_KEYTERMS == [
@@ -107,10 +108,8 @@ def test_uses_supported_chinese_speech_models() -> None:
     assert FISH_AUDIO_TTS_VOICE == "fa4c9eb3dccc4806b382b40d61c6b10a"
 
 
-def test_default_deepgram_configuration() -> None:
-    options = stt_inference_kwargs(
-        model=DEFAULT_STT_MODEL, profile=STT_PROFILE_ACCURACY
-    )
+def test_deepgram_rollback_configuration() -> None:
+    options = stt_inference_kwargs(model=DEEPGRAM_MODEL, profile=STT_PROFILE_ACCURACY)
     assert options["model"] == "deepgram/nova-3-general"
     assert options["language"] == "zh-CN"
 
@@ -125,7 +124,7 @@ def test_default_deepgram_configuration() -> None:
         "keyterm",
     }
     assert extra["interim_results"] is True
-    assert extra["no_delay"] is True
+    assert extra["no_delay"] is False
     assert extra["smart_format"] is True
     assert extra["numerals"] is True
     assert extra["punctuate"] is True
@@ -145,8 +144,11 @@ def test_default_deepgram_configuration() -> None:
         assert key not in extra
 
 
-def test_assemblyai_rollback_keeps_accuracy_configuration() -> None:
-    options = stt_inference_kwargs(model=ASSEMBLYAI_MODEL, profile=STT_PROFILE_ACCURACY)
+def test_default_assemblyai_accuracy_configuration() -> None:
+    assert DEFAULT_STT_MODEL == ASSEMBLYAI_MODEL
+    options = stt_inference_kwargs(
+        model=DEFAULT_STT_MODEL, profile=STT_PROFILE_ACCURACY
+    )
     # AssemblyAI's Mandarin code differs from Deepgram's BCP-47 locale.
     assert options["language"] == ASSEMBLYAI_STT_LANGUAGE == "zh"
 
@@ -191,15 +193,13 @@ def test_provider_options_are_only_sent_to_the_matching_provider() -> None:
 
 
 def test_baseline_profile_keeps_provider_defaults() -> None:
-    deepgram = stt_inference_kwargs(
+    assemblyai = stt_inference_kwargs(
         model=DEFAULT_STT_MODEL, profile=STT_PROFILE_BASELINE
     )
-    assert deepgram == {"model": DEFAULT_STT_MODEL, "language": "zh-CN"}
+    assert assemblyai == {"model": DEFAULT_STT_MODEL, "language": "zh"}
 
-    assemblyai = stt_inference_kwargs(
-        model=ASSEMBLYAI_MODEL, profile=STT_PROFILE_BASELINE
-    )
-    assert assemblyai == {"model": ASSEMBLYAI_MODEL, "language": "zh"}
+    deepgram = stt_inference_kwargs(model=DEEPGRAM_MODEL, profile=STT_PROFILE_BASELINE)
+    assert deepgram == {"model": DEEPGRAM_MODEL, "language": "zh-CN"}
 
 
 def test_profile_override_is_validated() -> None:
