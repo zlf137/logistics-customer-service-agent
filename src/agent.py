@@ -115,10 +115,23 @@ DEEPGRAM_NUMERALS = True
 DEEPGRAM_PUNCTUATE = True
 DEEPGRAM_ENDPOINTING_MS = 800
 
-# Default: Cartesia Sonic 3.6 through LiveKit Inference, the mainstream
-# low-latency voice-agent path. Fish Audio stays available as a rollback/A-B
-# option with no code edit: LOGISTICS_TTS_MODEL=fishaudio/s2.1-pro.
-DEFAULT_TTS_MODEL = "cartesia/sonic-3.6"
+# Default: Cartesia Sonic 3.5 through LiveKit Inference, a mainstream
+# low-latency streaming voice-agent path offered through the gateway.
+# In the 2026-11-12 local live runs Sonic 3.5 was the only Cartesia model that
+# finished a session cleanly: it returned to listening and produced complete
+# Chinese assistant speech in consecutive turns, with observed TTS time-to-first
+# byte around 0.43-1.02 s. Protective "flush audio emitter due to slow audio
+# generation" debug lines varied from one to many without truncating those
+# turns. Sonic 3 in its comparison run had a lower TTFB but stayed stuck in the
+# speaking state past 30 s and emitted no final assistant conversation item.
+# This is single-run observation, not a statistical comparison.
+# That flush line is the TTS emitter releasing buffered audio before downstream
+# playback underruns, not an API error, so it does not trigger a server-side
+# fallback; completion and return to listening are the acceptance signals.
+# A/B and rollback options need no code edit:
+# LOGISTICS_TTS_MODEL=cartesia/sonic-3 or cartesia/sonic-3.6 for the other
+# Cartesia models, or LOGISTICS_TTS_MODEL=fishaudio/s2.1-pro for Fish Audio.
+DEFAULT_TTS_MODEL = "cartesia/sonic-3.5"
 TTS_MODEL = os.getenv("LOGISTICS_TTS_MODEL", "").strip() or DEFAULT_TTS_MODEL
 TTS_LANGUAGE = "zh"
 

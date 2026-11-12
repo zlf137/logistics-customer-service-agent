@@ -11,7 +11,7 @@ The starter includes:
 - A simple [voice AI assistant](https://docs.livekit.io/agents/start/voice-ai/) to extend and customize.
 - A voice pipeline built on [LiveKit Inference](https://docs.livekit.io/agents/models/inference/), which gives you access to [models](https://docs.livekit.io/agents/models/) from top labs with no extra configuration:
   - The default LLM is Gemma 4 31B, an open-weight model [hosted by LiveKit](https://docs.livekit.io/agents/models/llm/livekit/) and tuned for voice AI.
-  - The default TTS is [Cartesia Sonic 3.6](https://docs.livekit.io/agents/models/tts/cartesia/), a low-latency streaming voice; [Fish Audio S2.1 Pro](https://docs.livekit.io/agents/models/tts/fishaudio/) stays available as an env-only rollback.
+  - The default TTS is [Cartesia Sonic 3.5](https://docs.livekit.io/agents/models/tts/cartesia/), a low-latency streaming voice; Sonic 3 and Sonic 3.6 stay available as env-only A/B options, and [Fish Audio S2.1 Pro](https://docs.livekit.io/agents/models/tts/fishaudio/) as the rollback.
   - More than 50 other models are available from OpenAI, Cartesia, Deepgram, and other providers.
   - [Realtime models](https://docs.livekit.io/agents/models/realtime/) such as OpenAI GPT-Live. Many other models are available through the [plugin ecosystem](https://docs.livekit.io/agents/models/#plugins).
 - [Expressive mode](https://docs.livekit.io/agents/models/tts/expressive/) support, disabled by default in this project so the agent's voice carries no model-inserted emotion or `<break>` markup; see [TTS configuration and rollback](#tts-configuration-and-rollback).
@@ -292,13 +292,14 @@ Deepgram rollback until a longer real-speaker comparison confirms the default.
 
 ## TTS configuration and rollback
 
-The default voice pipeline uses **Cartesia Sonic 3.6**
-(`cartesia/sonic-3.6`) through LiveKit Inference with `language="zh"` and
-Cartesia's official plugin default voice
-`f786b574-daa5-4673-aa0c-cbe3e8534c02`. Sonic is a streaming, low-latency
-voice-agent model and needs no provider key or plugin through Inference. Fish
-Audio S2.1 Pro remains available as an env-only rollback/A-B option, with its
-previous reliability settings and voice intact.
+The default voice pipeline uses **Cartesia Sonic 3.5** (`cartesia/sonic-3.5`)
+through LiveKit Inference with `language="zh"` and Cartesia's official plugin
+default voice `f786b574-daa5-4673-aa0c-cbe3e8534c02`. Sonic 3.5 is a streaming,
+low-latency voice-agent model available through the gateway, and needs no
+provider key or plugin. Sonic 3 (`cartesia/sonic-3`) and Sonic 3.6
+(`cartesia/sonic-3.6`) remain available as env-only A/B options, and Fish Audio
+S2.1 Pro (`fishaudio/s2.1-pro`) as the rollback, all with the same voice,
+language and reliability settings.
 
 `src/agent.py` builds the TTS call from one pure function,
 `tts_inference_kwargs()`; provider-specific extras are gated by model prefix, so
@@ -306,7 +307,7 @@ Cartesia options are never sent to Fish Audio and vice versa. The voice is also
 provider-aware (`resolve_tts_voice()`): it follows the selected model, and
 `LOGISTICS_TTS_VOICE` overrides it for either provider.
 
-### Default: Cartesia Sonic 3.6
+### Default: Cartesia Sonic 3.5
 
 | Option | Value | Why |
 |--------|-------|-----|
@@ -319,10 +320,38 @@ provider-aware (`resolve_tts_voice()`): it follows the selected model, and
 `emotion` and the timestamp options are deliberately not sent: expressive
 markup stays off, and the model must not be encouraged to emit emotion tags.
 All three keys exist in the installed `livekit-agents` 1.8.10 `CartesiaOptions`
-type, so this profile carries no unknown-option risk. The installed 1.8.10
-model literal lists up to `cartesia/sonic-3.5`; the `sonic-3.6` ID comes from
-current LiveKit docs. If the gateway rejects it at session start, set
-`LOGISTICS_TTS_MODEL=cartesia/sonic-3.5` — no code edit needed.
+type, and `cartesia/sonic-3.5` is in the installed 1.8.10 `inference.TTS` model
+literal (as are `cartesia/sonic-3` and `cartesia/sonic-3-latest`), so the
+default carries no unknown-model or unknown-option risk. `cartesia/sonic-3.6`
+is **not** in that literal; it comes from current LiveKit docs and is kept as
+an env-only A/B option. If the gateway rejects it at session start, remove
+`LOGISTICS_TTS_MODEL` to return to the default, or use `cartesia/sonic-3` or
+`cartesia/sonic-3.5`, both of which are in the literal — no code edit is
+needed either way.
+
+**Observed live evidence (2026-11-12):** in separate local runs, Sonic 3.5 was
+the only Cartesia model that completed normally across consecutive turns — it
+returned to listening and produced complete Chinese assistant speech with
+observed TTS time-to-first-byte around 0.43–1.02 seconds. Its protective `flush
+audio emitter due to slow audio generation` lines varied from one to many
+without truncating those turns. Sonic 3 had a lower TTFB but stayed stuck in the
+speaking state beyond 30 seconds and emitted no final assistant conversation
+item in that run. These are single-run observations under the same local
+conditions, not a statistical comparison or a real-speaker A/B; they are the
+reason for choosing Sonic 3.5 as the default, not proof that it is generally
+more reliable.
+
+### What the `flush audio emitter` line means
+
+`flush audio emitter due to slow audio generation` is a **debug-level** log
+line from the LiveKit TTS emitter. When synthesis falls behind real-time
+playback, the emitter releases the audio it has already buffered so the
+downstream player does not underrun and stutter. It is a protective buffer
+release, not an API error, and no server-side fallback triggers on it: it does
+not cause LiveKit Inference or the gateway to switch models. Repeated
+occurrences are the symptom to watch, because they mean generation is
+consistently slower than playback; a single occurrence on one reply is not by
+itself a failure.
 
 ### Rollback / A-B: Fish Audio
 
@@ -354,14 +383,21 @@ restart the agent after changing one.
 ### A/B and rollback without code edits (PowerShell)
 
 ```powershell
-# Default: Cartesia Sonic 3.6 with the settings above.
+# Default: Cartesia Sonic 3.5 with the settings above.
+lk agent console
+
+# A/B the other Cartesia models; voice and extras stay identical.
+$env:LOGISTICS_TTS_MODEL = "cartesia/sonic-3"
+lk agent console
+
+$env:LOGISTICS_TTS_MODEL = "cartesia/sonic-3.6"
 lk agent console
 
 # Roll back to Fish Audio; voice and extras switch automatically.
 $env:LOGISTICS_TTS_MODEL = "fishaudio/s2.1-pro"
 lk agent console
 
-# Back to the Cartesia default.
+# Back to the Cartesia Sonic 3.5 default.
 Remove-Item Env:\LOGISTICS_TTS_MODEL
 lk agent console
 
@@ -388,18 +424,22 @@ warning instead of silently re-enabling markup.
 ### What is and is not verified
 
 Unit tests pin the configuration plumbing only. **Cartesia's Chinese
-naturalness, the default voice's Mandarin pronunciation, and any improvement in
-the electronic artifacts are unverified** — they need a real-speaker A/B:
-record the same 5–10 utterances (including a waybill read digit by digit),
-synthesize them through Cartesia and then through the Fish Audio rollback, and
-compare pronunciation, pauses, and artifacts. If the default voice sounds
-accented or unsuitable for Mandarin, point `LOGISTICS_TTS_VOICE` at a Cartesia
-multilingual or Chinese voice; no code edit is needed.
+naturalness, the default voice's Mandarin pronunciation, and any broad
+improvement in audio artifacts are unverified** — the live evidence above is a
+small local comparison where Sonic 3.5 completed consecutive turns and Sonic 3
+stalled once, but that is not a real-speaker A/B. Record the same 5–10
+utterances (including a waybill read digit by digit), synthesize them through
+Sonic 3.5, the Sonic 3 and Sonic 3.6 A/B options and the Fish Audio rollback,
+and compare pronunciation, pauses, completion behaviour and artifacts. If the
+default voice sounds accented or unsuitable for Mandarin, point
+`LOGISTICS_TTS_VOICE` at a Cartesia multilingual or Chinese voice; no code edit
+is needed.
 
-The earlier Fish Audio `flush audio emitter due to slow audio generation`
-warnings and brief electronic artifacts may be provider- or network-side, not
-only configuration. Cartesia changes the provider, so re-check `lk agent logs`
-after the switch.
+If Sonic 3.5 ever shows the same stuck-speaking behaviour, switch with
+`LOGISTICS_TTS_MODEL` to another Cartesia model or Fish Audio and compare
+`lk agent logs`. Repeated `flush audio emitter` lines after a model switch
+point at synthesis running behind playback (provider load or network) rather
+than configuration.
 
 ## Frontends and telephony
 

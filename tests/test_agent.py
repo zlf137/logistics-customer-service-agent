@@ -105,7 +105,7 @@ def test_uses_supported_chinese_speech_models() -> None:
         "12345678",
         "LOG9113180438SG",
     ]
-    assert DEFAULT_TTS_MODEL == "cartesia/sonic-3.6"
+    assert DEFAULT_TTS_MODEL == "cartesia/sonic-3.5"
     assert TTS_LANGUAGE == "zh"
     assert CARTESIA_TTS_VOICE == "f786b574-daa5-4673-aa0c-cbe3e8534c02"
     assert FISH_AUDIO_TTS_VOICE == "fa4c9eb3dccc4806b382b40d61c6b10a"
@@ -234,7 +234,7 @@ def test_default_tts_is_cartesia_multilingual() -> None:
     options = tts_inference_kwargs(
         model=DEFAULT_TTS_MODEL, voice="", profile=TTS_PROFILE_RELIABILITY
     )
-    assert options["model"] == "cartesia/sonic-3.6"
+    assert options["model"] == "cartesia/sonic-3.5"
     assert options["voice"] == CARTESIA_TTS_VOICE
     assert options["language"] == "zh"
     assert "voice" in options
@@ -258,6 +258,24 @@ def test_default_tts_is_cartesia_multilingual() -> None:
         "normalize_loudness",
     ):
         assert key not in extra
+
+
+def test_other_cartesia_models_remain_env_ab_options() -> None:
+    default = tts_inference_kwargs(
+        model=DEFAULT_TTS_MODEL, voice="", profile=TTS_PROFILE_RELIABILITY
+    )
+    assert DEFAULT_TTS_MODEL == "cartesia/sonic-3.5"
+    # Both other Cartesia models are env-only A/B options; switching
+    # LOGISTICS_TTS_MODEL changes only the model id, so voice, language and
+    # reliability extras stay identical for a fair same-utterance comparison.
+    for model in ("cartesia/sonic-3", "cartesia/sonic-3.6"):
+        options = tts_inference_kwargs(
+            model=model, voice="", profile=TTS_PROFILE_RELIABILITY
+        )
+        assert options["model"] == model
+        assert options["voice"] == default["voice"] == CARTESIA_TTS_VOICE
+        assert options["language"] == default["language"] == "zh"
+        assert options["extra_kwargs"] == default["extra_kwargs"]
 
 
 def test_fishaudio_rollback_keeps_voice_and_extras() -> None:
@@ -291,18 +309,24 @@ def test_fishaudio_rollback_keeps_voice_and_extras() -> None:
 
 
 def test_tts_voice_resolution_and_override() -> None:
-    assert inference_provider("cartesia/sonic-3.6:zh") == "cartesia"
+    assert inference_provider("cartesia/sonic-3:zh") == "cartesia"
     assert inference_provider("fishaudio/s2.1-pro:zh") == "fishaudio"
 
     # The voice follows the model when no explicit override is set.
-    assert resolve_tts_voice("cartesia/sonic-3.6", "") == CARTESIA_TTS_VOICE
+    assert resolve_tts_voice("cartesia/sonic-3", "") == CARTESIA_TTS_VOICE
     assert resolve_tts_voice("fishaudio/s2.1-pro", "") == FISH_AUDIO_TTS_VOICE
     # Unknown providers get no voice id; the gateway default applies.
     assert resolve_tts_voice("auto:zh", "") is None
     assert "voice" not in tts_inference_kwargs(model="auto:zh", voice="")
 
     # LOGISTICS_TTS_VOICE always wins, whichever model is selected.
-    for model in ("cartesia/sonic-3.6", "fishaudio/s2.1-pro", "rime/coda"):
+    for model in (
+        "cartesia/sonic-3.5",
+        "cartesia/sonic-3",
+        "cartesia/sonic-3.6",
+        "fishaudio/s2.1-pro",
+        "rime/coda",
+    ):
         assert resolve_tts_voice(model, "custom-voice") == "custom-voice"
         assert (
             tts_inference_kwargs(model=model, voice="custom-voice")["voice"]
@@ -312,7 +336,7 @@ def test_tts_voice_resolution_and_override() -> None:
 
 def test_tts_provider_extras_are_gated_by_provider() -> None:
     cartesia = tts_inference_kwargs(
-        model="cartesia/sonic-3.6", voice="", profile=TTS_PROFILE_RELIABILITY
+        model="cartesia/sonic-3", voice="", profile=TTS_PROFILE_RELIABILITY
     )
     assert "latency" not in cartesia["extra_kwargs"]
     assert "temperature" not in cartesia["extra_kwargs"]
