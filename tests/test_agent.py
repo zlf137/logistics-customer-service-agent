@@ -1,3 +1,5 @@
+# ruff: noqa: RUF001
+
 import pytest
 from livekit.agents import inference
 
@@ -38,9 +40,11 @@ from agent import (
     turn_handling_options,
 )
 from fleetbase_backend import (
+    MIN_WAYBILL_LENGTH,
     FleetbaseClient,
     FleetbaseConflictError,
     LogisticsSessionState,
+    WaybillCandidate,
 )
 
 
@@ -395,9 +399,14 @@ def test_assistant_requires_later_confirmation() -> None:
     assert "准备和提交绝不能发生在同一用户消息" in instructions
     assert "后续一轮明确确认" in instructions
     assert "提交失败或冲突时不得声称成功" in instructions
-    assert "连续两次" in instructions
-    assert "聊天输入框" in instructions
+    assert "逐位复述" in instructions
+    assert "准备和查询绝不能发生在同一用户消息" in instructions
+    assert "键盘输入只是可选项" in instructions
+    assert "语音重试始终有效" in instructions
+    # The old two-strike keyboard fallback is gone.
+    assert "连续两次" not in instructions
     assert {tool.id for tool in Assistant(FakeFleetbase()).tools} == {
+        "prepare_waybill_lookup",
         "lookup_waybill",
         "list_delivery_slots",
         "prepare_reschedule",
@@ -452,33 +461,138 @@ async def test_lookup_rejects_partial_spoken_waybill() -> None:
     }
 
 
-def test_waybill_lookup_failures_recommend_keyboard_fallback_after_two_attempts() -> (
-    None
-):
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (" log-9113 180438-sg ", "LOG9113180438SG"),
+        ("ＬＯＧ－９１１３１８０４３８ＳＧ", "LOG9113180438SG"),
+        ("１２３４５６７８", "12345678"),
+        ("一二三四五六七八", "12345678"),
+        ("幺二三四五六七八", "12345678"),
+        ("零〇○一二三四五", "00012345"),
+    ],
+)
+def test_normalize_waybill_folds_width_and_chinese_digits(raw, expected) -> None:
+    assert FleetbaseClient.normalize_waybill(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Unit words make a dictation ambiguous; never reinterpret it.
+        "一千二百三十四万五千六百七十八",
+        "十二万三千四百五十六",
+        "一二三四五六七八九十一",
+        # Mixed ASCII and Chinese digits is likewise left alone.
+        "1234五六七八",
+    ],
+)
+def test_normalize_waybill_leaves_unit_and_mixed_numerals_alone(raw) -> None:
+    assert FleetbaseClient.normalize_waybill(raw) == raw
+
+
+@pytest.mark.asyncio
+async def test_lookup_accepts_a_pure_chinese_digit_waybill() -> None:
+    class ChineseDigitFleetbase(FakeFleetbase):
+        async def _request(
+            self, method, path, *, internal=False, params=None, json=None
+        ):
+            if method == "GET" and path == "/v1/orders":
+                return (
+                    self.order.copy() if params["tracking_number"] == "12345678" else []
+                )
+            return await super()._request(
+                method, path, internal=internal, params=params, json=json
+            )
+
+    client = ChineseDigitFleetbase()
+    client.order["tracking_number"]["tracking_number"] = "12345678"
+
+    result = await client.lookup_waybill("幺二三四五六七八")
+
+    assert result["found"] is True
+    assert result["order_id"] == "order-1"
+
+
+def test_prepare_waybill_reads_back_without_querying() -> None:
     state = LogisticsSessionState()
 
-    first = state.record_waybill_lookup(
-        {"found": False, "waybill_number": "1234", "incomplete": True}
-    )
-    assert first["consecutive_lookup_failures"] == 1
-    assert first["input_fallback_recommended"] is False
+    payload = state.prepare_waybill_lookup("幺二三四 五六七八", "user-1")
 
-    second = state.record_waybill_lookup({"found": False, "waybill_number": "12345679"})
-    assert second["consecutive_lookup_failures"] == 2
-    assert second["input_fallback_recommended"] is True
-    assert second["input_fallback"] == "chat_text_input"
+    assert payload["candidate_waybill"] == "12345678"
+    assert payload["digit_by_digit"] == "1 2 3 4 5 6 7 8"
+    assert payload["confirmation_required"] is True
+    assert state.pending_waybill == WaybillCandidate("12345678", "user-1")
 
 
-def test_successful_waybill_lookup_resets_fallback_counter() -> None:
-    state = LogisticsSessionState(consecutive_waybill_lookup_failures=2)
+def test_prepare_waybill_rejects_incomplete_number() -> None:
+    state = LogisticsSessionState()
 
-    result = state.record_waybill_lookup(
-        {"found": True, "waybill_number": "12345678", "order_id": "order-1"}
-    )
+    with pytest.raises(FleetbaseConflictError, match="incomplete"):
+        state.prepare_waybill_lookup("一 二 三 四", "user-1")
 
-    assert result["consecutive_lookup_failures"] == 0
-    assert result["input_fallback_recommended"] is False
-    assert state.consecutive_waybill_lookup_failures == 0
+    assert state.pending_waybill is None
+    assert MIN_WAYBILL_LENGTH == 8
+
+
+def test_lookup_requires_an_earlier_prepared_candidate() -> None:
+    with pytest.raises(FleetbaseConflictError, match="No waybill confirmation"):
+        LogisticsSessionState().confirm_waybill_lookup("12345678", "user-1")
+
+
+def test_lookup_requires_a_later_confirming_turn_and_the_same_number() -> None:
+    state = LogisticsSessionState()
+    state.prepare_waybill_lookup("12345678", "user-1")
+
+    with pytest.raises(FleetbaseConflictError, match="later user turn"):
+        state.confirm_waybill_lookup("12345678", "user-1")
+    with pytest.raises(FleetbaseConflictError, match="does not match"):
+        state.confirm_waybill_lookup("12345679", "user-2")
+
+    confirmed = state.confirm_waybill_lookup("一 二 三 四 五 六 七 八", "user-2")
+    assert confirmed == "12345678"
+
+
+def test_replying_incorrect_overwrites_the_candidate() -> None:
+    state = LogisticsSessionState()
+    state.prepare_waybill_lookup("12345678", "user-1")
+    state.confirmed_waybill = "12345678"
+
+    payload = state.prepare_waybill_lookup("12345679", "user-2")
+
+    assert payload["candidate_waybill"] == "12345679"
+    assert state.pending_waybill == WaybillCandidate("12345679", "user-2")
+    assert state.confirmed_waybill is None
+
+
+def test_discarding_the_candidate_requires_a_fresh_read_back() -> None:
+    state = LogisticsSessionState()
+    state.prepare_waybill_lookup("12345678", "user-1")
+    state.discard_waybill_candidate()
+
+    assert state.pending_waybill is None
+    with pytest.raises(FleetbaseConflictError, match="No waybill confirmation"):
+        state.confirm_waybill_lookup("12345678", "user-2")
+
+
+def test_slot_query_requires_an_already_confirmed_waybill() -> None:
+    state = LogisticsSessionState()
+
+    with pytest.raises(FleetbaseConflictError, match="not been confirmed"):
+        state.require_confirmed_waybill("LOG9113180438SG")
+
+    state.confirmed_waybill = "LOG9113180438SG"
+    assert state.require_confirmed_waybill(" log-9113 180438-sg ") == "LOG9113180438SG"
+
+
+def test_only_a_successful_lookup_authorizes_downstream_reads() -> None:
+    state = LogisticsSessionState(confirmed_waybill="12345678")
+
+    state.record_confirmed_waybill_result("12345679", {"found": False})
+    assert state.confirmed_waybill is None
+
+    state.record_confirmed_waybill_result("12345678", {"found": True})
+    assert state.confirmed_waybill == "12345678"
 
 
 @pytest.mark.asyncio

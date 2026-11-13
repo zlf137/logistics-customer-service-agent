@@ -443,21 +443,40 @@ than configuration.
 
 ## Frontends and telephony
 
-### Typed waybill fallback
+### Waybill confirmation and typed input
 
-Do not build a separate waybill transport or fuzzy matcher. LiveKit
-`AgentSession` already accepts typed messages through the `lk.chat` text stream,
-and the official Agent Embed Widget can expose that channel as a chat pane.
-For this project, enable **Text chat** on the agent's **Embed → Settings** page
-in LiveKit Cloud. The existing voice pipeline remains active; users can type or
-paste the waybill into the same session when speech recognition is unreliable.
+Every waybill is confirmed before it is looked up. `prepare_waybill_lookup()`
+normalizes the number, stores it with the id of the latest committed user
+message (the same anchor the reschedule flow uses), and returns a read-back
+payload; it never queries Fleetbase. The agent must read the candidate back
+digit by digit and ask whether it is correct.
+`lookup_waybill()` then refuses to run unless the same normalized candidate was
+prepared in an **earlier** user message, so a lookup can never happen in the
+turn that supplied the number. Saying the number is wrong, or dictating a new
+one, simply prepares again and overwrites the candidate. A lookup clears the
+candidate, so retrying always goes through one fresh read-back.
+`list_delivery_slots()` is guarded the same way: it reads the order endpoint
+internally, so it refuses any number that was not confirmed **and** found by a
+successful lookup. Preparing a new number clears that authorization, so one
+order can never unlock a slot query for another.
 
-The agent tracks consecutive exact-lookup failures per session. After the
-second incomplete or not-found lookup, it asks the user to enter the complete
-waybill with the keyboard in the chat input. A successful exact lookup resets
-the counter. Typed input does not weaken validation: the Fleetbase adapter
-still normalizes spaces and hyphens and then requires an exact tracking-number
-match of at least eight letters or digits.
+Validation stays exact. `FleetbaseClient.normalize_waybill()` applies NFKC
+full-width folding, then strips whitespace and hyphens and uppercases the
+result. A value made up only of Chinese digit characters
+(`零〇○一二三四五六七八九幺`) is converted one character at a time, so
+`幺二三四五六七八` becomes `12345678`. Values that mix Chinese digits with unit
+words such as `十`, `百`, `千` or `万` are left untouched and fail the exact
+match, because a unit reading is ambiguous; there is no fuzzy or
+nearest-number matching anywhere in the path. Numbers shorter than eight
+characters are rejected as incomplete before any request is made.
+
+Typed input remains available but is only ever a suggestion. LiveKit
+`AgentSession` accepts typed messages through the `lk.chat` text stream, and
+the official Agent Embed Widget can expose that channel as a chat pane; enable
+**Text chat** on the agent's **Embed → Settings** page in LiveKit Cloud. When a
+number is incomplete or not found, the agent may offer the chat input as one
+option, but it must keep accepting a repeated voice dictation: there is no
+failure counter that forces the keyboard.
 
 Official setup: [Agent Embed Widget](https://docs.livekit.io/agents/start/embed/)
 and [text input](https://docs.livekit.io/agents/multimodality/text/).

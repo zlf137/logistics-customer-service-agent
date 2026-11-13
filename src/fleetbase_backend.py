@@ -1,13 +1,41 @@
+# ruff: noqa: RUF001, RUF003
+
 from __future__ import annotations
 
 import json as json_module
 import os
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 import aiohttp
+
+# A waybill must carry at least this many letters or digits before it is worth a
+# read-back or a lookup; shorter fragments are almost always a partial dictation.
+MIN_WAYBILL_LENGTH = 8
+
+# Chinese digits as a caller dictates them. 幺 is the telephone reading of one
+# and 〇 / ○ are common handwritten or OCR forms of zero. Units such as 十, 百,
+# 千 and 万 are deliberately absent: a number containing them is never
+# reinterpreted, because a unit-based reading ("一千二") is ambiguous and must
+# not be converted into a different identifier.
+CJK_DIGITS = {
+    "零": "0",
+    "〇": "0",
+    "○": "0",
+    "一": "1",
+    "幺": "1",
+    "二": "2",
+    "三": "3",
+    "四": "4",
+    "五": "5",
+    "六": "6",
+    "七": "7",
+    "八": "8",
+    "九": "9",
+}
 
 
 class FleetbaseError(RuntimeError):
@@ -30,27 +58,104 @@ class RescheduleProposal:
 
 
 @dataclass
+class WaybillCandidate:
+    """A normalized waybill that was read back and awaits confirmation."""
+
+    waybill_number: str
+    prepared_user_message_id: str
+
+
+@dataclass
 class LogisticsSessionState:
     proposals: dict[str, RescheduleProposal] = field(default_factory=dict)
-    consecutive_waybill_lookup_failures: int = 0
+    pending_waybill: WaybillCandidate | None = None
+    confirmed_waybill: str | None = None
 
-    def record_waybill_lookup(self, result: dict[str, Any]) -> dict[str, Any]:
-        """Track exact-lookup failures and expose when typed input should be offered."""
+    def prepare_waybill_lookup(
+        self, waybill_number: str, user_message_id: str
+    ) -> dict[str, Any]:
+        """Store the normalized candidate and return the read-back payload.
+
+        Preparing never queries Fleetbase. A new candidate always overwrites the
+        old one, so "no, that is wrong" followed by a fresh dictation simply
+        starts another read-back.
+        """
+
+        normalized = FleetbaseClient.normalize_waybill(waybill_number)
+        if len(normalized) < MIN_WAYBILL_LENGTH:
+            raise FleetbaseConflictError(
+                "The waybill number is incomplete; ask the user to repeat the "
+                "full number"
+            )
+        self.pending_waybill = WaybillCandidate(
+            waybill_number=normalized,
+            prepared_user_message_id=user_message_id,
+        )
+        # A newly supplied number starts a fresh verification flow. Do not let
+        # a previously confirmed order authorize slot queries for this one.
+        self.confirmed_waybill = None
+        return {
+            "candidate_waybill": normalized,
+            "digit_by_digit": " ".join(normalized),
+            "confirmation_required": True,
+            "instruction": (
+                "Read this number back to the user one character at a time and "
+                "ask whether it is correct. Do not look it up in this turn."
+            ),
+        }
+
+    def confirm_waybill_lookup(self, waybill_number: str, user_message_id: str) -> str:
+        """Return the normalized number once a later user turn confirms it.
+
+        Raises when nothing was prepared, when the number differs from the
+        candidate that was read back, or when the confirmation arrives in the
+        same user turn that supplied the number.
+        """
+
+        candidate = self.pending_waybill
+        if candidate is None:
+            raise FleetbaseConflictError(
+                "No waybill confirmation is pending; read the number back first"
+            )
+        normalized = FleetbaseClient.normalize_waybill(waybill_number)
+        if normalized != candidate.waybill_number:
+            raise FleetbaseConflictError(
+                "The waybill number does not match the candidate that was read back"
+            )
+        if user_message_id == candidate.prepared_user_message_id:
+            raise FleetbaseConflictError(
+                "The waybill must be confirmed in a later user turn"
+            )
+        return normalized
+
+    def discard_waybill_candidate(self) -> None:
+        """Drop the pending candidate once a lookup has been attempted."""
+
+        self.pending_waybill = None
+
+    def record_confirmed_waybill_result(
+        self, waybill_number: str, result: dict[str, Any]
+    ) -> None:
+        """Authorize downstream reads only after an exact lookup succeeds."""
 
         if result.get("found"):
-            self.consecutive_waybill_lookup_failures = 0
+            self.confirmed_waybill = FleetbaseClient.normalize_waybill(waybill_number)
         else:
-            self.consecutive_waybill_lookup_failures += 1
+            self.confirmed_waybill = None
 
-        fallback_recommended = self.consecutive_waybill_lookup_failures >= 2
-        enriched = {
-            **result,
-            "consecutive_lookup_failures": self.consecutive_waybill_lookup_failures,
-            "input_fallback_recommended": fallback_recommended,
-        }
-        if fallback_recommended:
-            enriched["input_fallback"] = "chat_text_input"
-        return enriched
+    def require_confirmed_waybill(self, waybill_number: str) -> str:
+        """Return the normalized number only if it was already confirmed.
+
+        Slot queries hit Fleetbase's order endpoint too, so they must not become
+        a way to read a status without the two-turn read-back.
+        """
+
+        normalized = FleetbaseClient.normalize_waybill(waybill_number)
+        if self.confirmed_waybill != normalized:
+            raise FleetbaseConflictError(
+                "The waybill has not been confirmed and looked up yet"
+            )
+        return normalized
 
 
 class FleetbaseClient:
@@ -112,7 +217,22 @@ class FleetbaseClient:
 
     @staticmethod
     def normalize_waybill(value: str) -> str:
-        return "".join(value.split()).replace("-", "").upper()
+        """Fold a spoken or typed waybill into the form Fleetbase stores.
+
+        NFKC folds full-width letters, digits, spaces and hyphens before the
+        existing whitespace and hyphen stripping. A value made up only of
+        Chinese digit characters is read one character at a time, the way a
+        caller dictates it. Anything mixed, including unit words such as 十, 百,
+        千 or 万, is left untouched so it can never silently become a different
+        identifier. This is still exact matching: only the spelling is folded,
+        never a nearest-number guess.
+        """
+
+        folded = unicodedata.normalize("NFKC", value)
+        compact = "".join(folded.split()).replace("-", "").upper()
+        if compact and all(char in CJK_DIGITS for char in compact):
+            return "".join(CJK_DIGITS[char] for char in compact)
+        return compact
 
     @classmethod
     def _order_waybill(cls, order: dict[str, Any]) -> str:
@@ -126,7 +246,7 @@ class FleetbaseClient:
 
     async def lookup_waybill(self, waybill_number: str) -> dict[str, Any]:
         normalized = self.normalize_waybill(waybill_number)
-        if len(normalized) < 8:
+        if len(normalized) < MIN_WAYBILL_LENGTH:
             return {
                 "found": False,
                 "waybill_number": normalized,
