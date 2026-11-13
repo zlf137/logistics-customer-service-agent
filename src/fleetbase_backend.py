@@ -222,16 +222,26 @@ class FleetbaseClient:
         NFKC folds full-width letters, digits, spaces and hyphens before the
         existing whitespace and hyphen stripping. A value made up only of
         Chinese digit characters is read one character at a time, the way a
-        caller dictates it. Anything mixed, including unit words such as 十, 百,
-        千 or 万, is left untouched so it can never silently become a different
-        identifier. This is still exact matching: only the spelling is folded,
-        never a nearest-number guess.
+        caller dictates it. The same per-character mapping applies when those
+        digits are embedded in an ASCII-letter waybill (for example ``LOG九一``).
+        Mixed ASCII and Chinese digits without a letter, and unit words such as
+        十, 百, 千 or 万, are left untouched so they can never silently become a
+        different identifier. This is still exact matching: only the spelling
+        is folded, never a nearest-number guess.
         """
 
         folded = unicodedata.normalize("NFKC", value)
         compact = "".join(folded.split()).replace("-", "").upper()
         if compact and all(char in CJK_DIGITS for char in compact):
             return "".join(CJK_DIGITS[char] for char in compact)
+        has_ascii_letter = any("A" <= char <= "Z" for char in compact)
+        has_cjk_digit = any(char in CJK_DIGITS for char in compact)
+        is_letter_waybill = all(
+            char in CJK_DIGITS or "A" <= char <= "Z" or "0" <= char <= "9"
+            for char in compact
+        )
+        if has_ascii_letter and has_cjk_digit and is_letter_waybill:
+            return "".join(CJK_DIGITS.get(char, char) for char in compact)
         return compact
 
     @classmethod

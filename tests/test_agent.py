@@ -517,6 +517,8 @@ async def test_lookup_rejects_partial_spoken_waybill() -> None:
         ("一二三四五六七八", "12345678"),
         ("幺二三四五六七八", "12345678"),
         ("零〇○一二三四五", "00012345"),
+        ("log九一一三一八零四三八sg", "LOG9113180438SG"),
+        ("ＬＯＧ－九一一三  一八零四三八－ＳＧ", "LOG9113180438SG"),
     ],
 )
 def test_normalize_waybill_folds_width_and_chinese_digits(raw, expected) -> None:
@@ -570,6 +572,21 @@ def test_prepare_waybill_reads_back_without_querying() -> None:
     assert payload["digit_by_digit"] == "1 2 3 4 5 6 7 8"
     assert payload["confirmation_required"] is True
     assert state.pending_waybill == WaybillCandidate("12345678", "user-1")
+
+
+def test_mixed_letter_chinese_digit_waybill_requires_later_confirmation() -> None:
+    state = LogisticsSessionState()
+
+    payload = state.prepare_waybill_lookup("log九一一三一八零四三八sg", "user-1")
+
+    assert payload["candidate_waybill"] == "LOG9113180438SG"
+    assert payload["digit_by_digit"] == "L O G 9 1 1 3 1 8 0 4 3 8 S G"
+    with pytest.raises(FleetbaseConflictError, match="later user turn"):
+        state.confirm_waybill_lookup("LOG9113180438SG", "user-1")
+    assert (
+        state.confirm_waybill_lookup("log九一一三一八零四三八sg", "user-2")
+        == "LOG9113180438SG"
+    )
 
 
 def test_prepare_waybill_rejects_incomplete_number() -> None:
