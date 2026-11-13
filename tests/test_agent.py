@@ -6,7 +6,6 @@ from livekit.agents import inference
 from agent import (
     ASSEMBLYAI_ENDPOINTING_MIN_DELAY,
     ASSEMBLYAI_STT_LANGUAGE,
-    CARTESIA_TTS_MAX_BUFFER_DELAY_MS,
     CARTESIA_TTS_VOICE,
     DEEPGRAM_ENDPOINTING_MS,
     DEFAULT_STT_MODEL,
@@ -15,6 +14,13 @@ from agent import (
     DEFAULT_TTS_MODEL,
     DEFAULT_TTS_PROFILE,
     FISH_AUDIO_TTS_VOICE,
+    INTERRUPTION_BACKCHANNEL_BOUNDARY,
+    INTERRUPTION_FALSE_INTERRUPTION_TIMEOUT_SECONDS,
+    INTERRUPTION_MIN_DURATION_SECONDS,
+    INTERRUPTION_MIN_WORDS,
+    INTERRUPTION_MODE_ADAPTIVE,
+    INTERRUPTION_RESUME_FALSE_INTERRUPTION,
+    PREEMPTIVE_GENERATION_ENABLED,
     STT_CONTINUOUS_PARTIALS,
     STT_INTERRUPTION_DELAY_MS,
     STT_KEYTERMS,
@@ -30,6 +36,7 @@ from agent import (
     Assistant,
     default_stt_language,
     inference_provider,
+    interruption_options,
     resolve_stt_profile,
     resolve_tts_expressive,
     resolve_tts_profile,
@@ -109,7 +116,7 @@ def test_uses_supported_chinese_speech_models() -> None:
         "12345678",
         "LOG9113180438SG",
     ]
-    assert DEFAULT_TTS_MODEL == "cartesia/sonic-3.5"
+    assert DEFAULT_TTS_MODEL == "fishaudio/s2.1-pro"
     assert TTS_LANGUAGE == "zh"
     assert CARTESIA_TTS_VOICE == "f786b574-daa5-4673-aa0c-cbe3e8534c02"
     assert FISH_AUDIO_TTS_VOICE == "fa4c9eb3dccc4806b382b40d61c6b10a"
@@ -226,6 +233,50 @@ def test_other_stt_models_keep_the_turn_detector() -> None:
         assert "endpointing" not in options
 
 
+def test_adaptive_interruption_is_explicitly_pinned() -> None:
+    # The local/self-hosted Console path falls back to VAD unless the mode is
+    # requested explicitly, so these keys are the contract under test.
+    assert INTERRUPTION_MODE_ADAPTIVE == "adaptive"
+    assert INTERRUPTION_MIN_DURATION_SECONDS == 0.5
+    assert INTERRUPTION_MIN_WORDS == 0
+    assert INTERRUPTION_RESUME_FALSE_INTERRUPTION is True
+    assert INTERRUPTION_FALSE_INTERRUPTION_TIMEOUT_SECONDS == 2.0
+    assert INTERRUPTION_BACKCHANNEL_BOUNDARY == (1.0, 1.0)
+    assert PREEMPTIVE_GENERATION_ENABLED is True
+
+    assert interruption_options() == {
+        "mode": "adaptive",
+        "min_duration": 0.5,
+        "min_words": 0,
+        "resume_false_interruption": True,
+        "false_interruption_timeout": 2.0,
+        "backchannel_boundary": (1.0, 1.0),
+    }
+
+
+def test_interruption_is_independent_of_provider_aware_turn_detection() -> None:
+    for model in (ASSEMBLYAI_MODEL, DEEPGRAM_MODEL, "auto:zh"):
+        options = turn_handling_options(model)
+        # Interruption handling is the same whatever commits the user's turn.
+        assert options["interruption"] == interruption_options()
+        assert options["preemptive_generation"] == {"enabled": True}
+
+    # User-end detection itself is untouched by this change.
+    assemblyai = turn_handling_options(ASSEMBLYAI_MODEL)
+    assert assemblyai["turn_detection"] == "stt"
+    assert assemblyai["endpointing"] == {"min_delay": ASSEMBLYAI_ENDPOINTING_MIN_DELAY}
+    deepgram = turn_handling_options(DEEPGRAM_MODEL)
+    assert isinstance(deepgram["turn_detection"], inference.TurnDetector)
+    assert "endpointing" not in deepgram
+
+    # AssemblyAI provider options keep their pinned silence values.
+    extra = stt_inference_kwargs(model=ASSEMBLYAI_MODEL, profile=STT_PROFILE_ACCURACY)[
+        "extra_kwargs"
+    ]
+    assert extra["min_turn_silence"] == STT_MIN_TURN_SILENCE_MS
+    assert extra["max_turn_silence"] == STT_MAX_TURN_SILENCE_MS
+
+
 def test_profile_override_is_validated() -> None:
     assert DEFAULT_STT_PROFILE == STT_PROFILE_ACCURACY
     assert resolve_stt_profile("baseline") == STT_PROFILE_BASELINE
@@ -234,55 +285,51 @@ def test_profile_override_is_validated() -> None:
     assert resolve_stt_profile("bogus") == STT_PROFILE_ACCURACY
 
 
-def test_default_tts_is_cartesia_multilingual() -> None:
+def test_default_tts_is_fishaudio_with_reliability_profile() -> None:
     options = tts_inference_kwargs(
         model=DEFAULT_TTS_MODEL, voice="", profile=TTS_PROFILE_RELIABILITY
     )
-    assert options["model"] == "cartesia/sonic-3.5"
-    assert options["voice"] == CARTESIA_TTS_VOICE
+    assert options["model"] == "fishaudio/s2.1-pro"
+    assert options["voice"] == FISH_AUDIO_TTS_VOICE
     assert options["language"] == "zh"
     assert "voice" in options
 
     extra = options["extra_kwargs"]
-    assert set(extra) == {"speed", "volume", "max_buffer_delay_ms"}
-    # Neutral, natural delivery for voice replies.
-    assert extra["speed"] == 1.0
-    assert extra["volume"] == 1.0
-    # Low-latency streaming start point; not tuned against real speech.
-    assert extra["max_buffer_delay_ms"] == CARTESIA_TTS_MAX_BUFFER_DELAY_MS == 300
-    # No expressive markup and no timestamp work for plain audio playback.
-    for key in (
-        "emotion",
-        "add_timestamps",
-        "add_phoneme_timestamps",
+    assert set(extra) == {
         "latency",
         "temperature",
         "top_p",
+        "speed",
         "normalize",
         "normalize_loudness",
-    ):
+    }
+    assert extra["latency"] == "balanced"
+    assert extra["temperature"] == 0.6
+    assert extra["top_p"] == 0.7
+    assert extra["speed"] == 1.0
+    assert extra["normalize"] is True
+    assert extra["normalize_loudness"] is True
+    for key in ("volume", "max_buffer_delay_ms", "emotion"):
         assert key not in extra
 
 
 def test_other_cartesia_models_remain_env_ab_options() -> None:
-    default = tts_inference_kwargs(
-        model=DEFAULT_TTS_MODEL, voice="", profile=TTS_PROFILE_RELIABILITY
+    reference = tts_inference_kwargs(
+        model="cartesia/sonic-3.5", voice="", profile=TTS_PROFILE_RELIABILITY
     )
-    assert DEFAULT_TTS_MODEL == "cartesia/sonic-3.5"
-    # Both other Cartesia models are env-only A/B options; switching
-    # LOGISTICS_TTS_MODEL changes only the model id, so voice, language and
-    # reliability extras stay identical for a fair same-utterance comparison.
-    for model in ("cartesia/sonic-3", "cartesia/sonic-3.6"):
+    # All Cartesia models remain env-only A/B options with identical provider
+    # settings for a fair same-utterance comparison.
+    for model in ("cartesia/sonic-3", "cartesia/sonic-3.5", "cartesia/sonic-3.6"):
         options = tts_inference_kwargs(
             model=model, voice="", profile=TTS_PROFILE_RELIABILITY
         )
         assert options["model"] == model
-        assert options["voice"] == default["voice"] == CARTESIA_TTS_VOICE
-        assert options["language"] == default["language"] == "zh"
-        assert options["extra_kwargs"] == default["extra_kwargs"]
+        assert options["voice"] == reference["voice"] == CARTESIA_TTS_VOICE
+        assert options["language"] == reference["language"] == "zh"
+        assert options["extra_kwargs"] == reference["extra_kwargs"]
 
 
-def test_fishaudio_rollback_keeps_voice_and_extras() -> None:
+def test_fishaudio_keeps_voice_and_extras() -> None:
     options = tts_inference_kwargs(
         model="fishaudio/s2.1-pro", voice="", profile=TTS_PROFILE_RELIABILITY
     )
@@ -362,19 +409,19 @@ def test_tts_provider_extras_are_gated_by_provider() -> None:
 
 def test_tts_baseline_profile_keeps_provider_defaults() -> None:
     cartesia = tts_inference_kwargs(
-        model=DEFAULT_TTS_MODEL, voice="", profile=TTS_PROFILE_BASELINE
+        model="cartesia/sonic-3.5", voice="", profile=TTS_PROFILE_BASELINE
     )
     assert cartesia == {
-        "model": DEFAULT_TTS_MODEL,
+        "model": "cartesia/sonic-3.5",
         "voice": CARTESIA_TTS_VOICE,
         "language": "zh",
     }
 
     fish = tts_inference_kwargs(
-        model="fishaudio/s2.1-pro", voice="", profile=TTS_PROFILE_BASELINE
+        model=DEFAULT_TTS_MODEL, voice="", profile=TTS_PROFILE_BASELINE
     )
     assert fish == {
-        "model": "fishaudio/s2.1-pro",
+        "model": DEFAULT_TTS_MODEL,
         "voice": FISH_AUDIO_TTS_VOICE,
         "language": "zh",
     }

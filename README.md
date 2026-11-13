@@ -11,13 +11,13 @@ The starter includes:
 - A simple [voice AI assistant](https://docs.livekit.io/agents/start/voice-ai/) to extend and customize.
 - A voice pipeline built on [LiveKit Inference](https://docs.livekit.io/agents/models/inference/), which gives you access to [models](https://docs.livekit.io/agents/models/) from top labs with no extra configuration:
   - The default LLM is Gemma 4 31B, an open-weight model [hosted by LiveKit](https://docs.livekit.io/agents/models/llm/livekit/) and tuned for voice AI.
-  - The default TTS is [Cartesia Sonic 3.5](https://docs.livekit.io/agents/models/tts/cartesia/), a low-latency streaming voice; Sonic 3 and Sonic 3.6 stay available as env-only A/B options, and [Fish Audio S2.1 Pro](https://docs.livekit.io/agents/models/tts/fishaudio/) as the rollback.
+  - The default TTS is [Fish Audio S2.1 Pro](https://docs.livekit.io/agents/models/tts/fishaudio/) with the smoother male voice selected by the 2026-11-13 live A/B; Cartesia Sonic 3, 3.5 and 3.6 remain env-only A/B options.
   - More than 50 other models are available from OpenAI, Cartesia, Deepgram, and other providers.
   - [Realtime models](https://docs.livekit.io/agents/models/realtime/) such as OpenAI GPT-Live. Many other models are available through the [plugin ecosystem](https://docs.livekit.io/agents/models/#plugins).
 - [Expressive mode](https://docs.livekit.io/agents/models/tts/expressive/) support, disabled by default in this project so the agent's voice carries no model-inserted emotion or `<break>` markup; see [TTS configuration and rollback](#tts-configuration-and-rollback).
 - [Keyterms](https://docs.livekit.io/agents/models/stt/keyterms/), on by default, so speech recognition gets your names, brands, and jargon right, including names it picks up during the conversation, like a caller's.
 - Provider-aware turn handling: the default AssemblyAI STT supplies its own end-of-turn signal (`turn_detection="stt"` with no added endpointing delay), while the [LiveKit Turn Detector](https://docs.livekit.io/agents/logic/turns/turn-detector/) is retained for the Deepgram rollback and other models.
-- [Adaptive interruption handling](https://docs.livekit.io/agents/logic/turns/adaptive-interruption-handling/) is supported by the installed SDK, but is not yet explicitly enabled for the local Console path; the next tuning round will compare intentional barge-ins with backchannels and background noise.
+- [Adaptive interruption handling](https://docs.livekit.io/agents/logic/turns/adaptive-interruption-handling/) is explicitly enabled for the local/self-hosted Console path (`mode="adaptive"`, 0.5 s minimum, backchannel boundary 1.0/1.0, false-interruption resume after 2.0 s). A real-microphone run verified that “你别说了” stopped an active reply; backchannels and background noise still need valid A/B coverage. The detector is covered by the local dev allowance on LiveKit Cloud; self-hosted use past the monthly allowance is billed, and the SDK falls back to VAD if the detector cannot be created.
 - [Background voice cancellation](https://docs.livekit.io/transport/media/noise-cancellation/).
 - Session transcripts, traces, and recordings from LiveKit [Agent Observability](https://docs.livekit.io/testing/observability/).
 - [Simulations](https://docs.livekit.io/testing/simulations/) that test full conversations with your agent, run in CI on every merge to `main`.
@@ -219,6 +219,36 @@ late-transcript warning, and reduced observed end-to-end latency from roughly
 3.05–4.50 seconds to 2.03–2.62 seconds. This is synthetic evidence; a real
 microphone remains the final acceptance test.
 
+### Interruption handling
+
+Interruption handling is a separate concern from the user-end detection above:
+it decides whether the agent yields the floor while it is speaking. `src/agent.py`
+pins it through `interruption_options()` for every STT provider:
+
+| Option | Value | Why |
+|--------|-------|-----|
+| `mode` | `"adaptive"` | Uses the acoustic interruption detector instead of plain VAD, so short backchannels such as "嗯" or "好" do not cut the agent off. Without this explicit mode the local/self-hosted Console falls back to VAD. |
+| `min_duration` | `0.5` s | Speech shorter than this is not treated as an interruption. |
+| `min_words` | `0` | No additional word-count gate for a short barge-in. |
+| `resume_false_interruption` | `true` | Continues the interrupted reply when the overlap is classified as false. |
+| `false_interruption_timeout` | `2.0` s | Silence after an interruption before it is classified as false. |
+| `backchannel_boundary` | `(1.0, 1.0)` | Suppresses backchannel-classified overlap near the start and end of each agent turn. |
+
+Preemptive generation stays enabled (`preemptive_generation={"enabled": True}`),
+unchanged by this work. The adaptive detector is covered by the local dev
+allowance on LiveKit Cloud; self-hosted use past the monthly allowance is
+billed. If the SDK cannot create the detector it logs a warning and falls back
+to VAD, so the session still starts.
+
+Unit tests pin these values and the separation from provider-aware turn
+detection. In the 2026-11-13 real-microphone run, the detector initialized
+without VAD fallback and classified “你别说了” as a real interruption after
+about 0.55 seconds (about 0.86 probability); the active reply was marked
+`interrupted`. “嗯” was spoken only after the previous reply had ended, so it
+does not verify backchannel suppression. Background-noise and false-resume A/B
+remain open, and the AssemblyAI `min_turn_silence`/`max_turn_silence` values
+were deliberately not changed in this round.
+
 ### Rollback / A-B: Deepgram Nova-3
 
 `LOGISTICS_STT_MODEL=deepgram/nova-3-general` switches to the mainstream LiveKit
@@ -296,14 +326,11 @@ Deepgram rollback until a longer real-speaker comparison confirms the default.
 
 ## TTS configuration and rollback
 
-The default voice pipeline uses **Cartesia Sonic 3.5** (`cartesia/sonic-3.5`)
-through LiveKit Inference with `language="zh"` and Cartesia's official plugin
-default voice `f786b574-daa5-4673-aa0c-cbe3e8534c02`. Sonic 3.5 is a streaming,
-low-latency voice-agent model available through the gateway, and needs no
-provider key or plugin. Sonic 3 (`cartesia/sonic-3`) and Sonic 3.6
-(`cartesia/sonic-3.6`) remain available as env-only A/B options, and Fish Audio
-S2.1 Pro (`fishaudio/s2.1-pro`) as the rollback, all with the same voice,
-language and reliability settings.
+The default voice pipeline uses **Fish Audio S2.1 Pro**
+(`fishaudio/s2.1-pro`) through LiveKit Inference with `language="zh"` and the
+male voice `fa4c9eb3dccc4806b382b40d61c6b10a`. Cartesia Sonic 3, 3.5 and 3.6
+remain available as env-only A/B options. Voices and reliability settings are
+provider-specific rather than shared across the models.
 
 `src/agent.py` builds the TTS call from one pure function,
 `tts_inference_kwargs()`; provider-specific extras are gated by model prefix, so
@@ -311,15 +338,16 @@ Cartesia options are never sent to Fish Audio and vice versa. The voice is also
 provider-aware (`resolve_tts_voice()`): it follows the selected model, and
 `LOGISTICS_TTS_VOICE` overrides it for either provider.
 
-### Default: Cartesia Sonic 3.5
+### Default: Fish Audio S2.1 Pro
 
 | Option | Value | Why |
 |--------|-------|-----|
-| `language` | `zh` | Mandarin for Sonic's multilingual mode. |
-| `voice` | `f786b574-daa5-4673-aa0c-cbe3e8534c02` | Cartesia's official plugin default voice, available through Inference. |
+| `language` | `zh` | Mandarin synthesis. |
+| `voice` | `fa4c9eb3dccc4806b382b40d61c6b10a` | Male voice selected in the live A/B. |
+| `latency` | `balanced` | Avoids the quality trade-off of low-latency mode. |
+| `temperature` / `top_p` | 0.6 / 0.7 | Reduces variation between repeated utterances. |
+| `normalize` / `normalize_loudness` | `true` / `true` | Normalises spoken forms and output loudness. |
 | `speed` | 1.0 | Natural speaking rate. |
-| `volume` | 1.0 | Neutral level; loudness is handled downstream. |
-| `max_buffer_delay_ms` | 300 ms | Caps how long Cartesia may buffer text before generating audio. Lower values cut latency at the cost of prosody context; 300 ms is an A/B starting point, not a tuned value. |
 
 `emotion` and the timestamp options are deliberately not sent: expressive
 markup stays off, and the model must not be encouraged to emit emotion tags.
@@ -357,26 +385,22 @@ occurrences are the symptom to watch, because they mean generation is
 consistently slower than playback; a single occurrence on one reply is not by
 itself a failure.
 
-### Rollback / A-B: Fish Audio
+### A/B: Cartesia
 
-`LOGISTICS_TTS_MODEL=fishaudio/s2.1-pro` restores Fish Audio and, because the
-voice is provider-aware, the previous Fish voice
-`fa4c9eb3dccc4806b382b40d61c6b10a` and the `reliability` extras, with no code
-edit:
+Set `LOGISTICS_TTS_MODEL` to `cartesia/sonic-3`, `cartesia/sonic-3.5`, or
+`cartesia/sonic-3.6` to compare Cartesia. The provider-aware resolver selects
+Cartesia's voice and its speed, volume and buffer options automatically.
 
 | Option | Value | Why |
 |--------|-------|-----|
-| `expressive` (session) | off | Removes the markup guide from the LLM prompt, so the model stops inserting emotion, `<break>` and non-verbal tags. Those tags were the audible source of unnatural pauses and glitches. |
-| `latency` | `balanced` | Provider default streaming mode. `low` trades generation quality for speed and could worsen artifacts, so it is not used. |
-| `temperature` | 0.6 | Lower sampling variance than the provider default; repeats of the same sentence sound more consistent. |
-| `top_p` | 0.7 | Together with temperature, keeps sampling away from unlikely token paths. |
-| `normalize` | `true` | Normalises numbers, dates and abbreviations before synthesis. |
-| `normalize_loudness` | `true` | Consistent output loudness (S2-Pro family). |
-| `speed` | 1.0 | Natural speaking rate. 1.05 is the documented upper bound if replies need to finish sooner; the value is not changed without an A/B. |
+| `language` | `zh` | Mandarin for Sonic's multilingual mode. |
+| `voice` | `f786b574-daa5-4673-aa0c-cbe3e8534c02` | Cartesia's official plugin default voice. |
+| `speed` | 1.0 | Natural speaking rate. |
+| `volume` | 1.0 | Neutral output level. |
+| `max_buffer_delay_ms` | 300 ms | A bounded-buffer A/B starting point, not a generally tuned value. |
 
-`chunk_length` and `min_chunk_length` are deliberately left at provider
-defaults: there is no official guidance tying them to these artifacts, and
-changing chunk boundaries would confound the comparison.
+Cartesia-specific keys are never sent to Fish, and Fish-specific latency,
+sampling and normalisation keys are never sent to Cartesia.
 
 `LOGISTICS_TTS_PROFILE=reliability` (default) sends the table for the selected
 provider; `LOGISTICS_TTS_PROFILE=baseline` sends only model, voice and
@@ -387,7 +411,7 @@ restart the agent after changing one.
 ### A/B and rollback without code edits (PowerShell)
 
 ```powershell
-# Default: Cartesia Sonic 3.5 with the settings above.
+# Default: Fish Audio S2.1 Pro with the male voice and settings above.
 lk agent console
 
 # A/B the other Cartesia models; voice and extras stay identical.
@@ -397,11 +421,7 @@ lk agent console
 $env:LOGISTICS_TTS_MODEL = "cartesia/sonic-3.6"
 lk agent console
 
-# Roll back to Fish Audio; voice and extras switch automatically.
-$env:LOGISTICS_TTS_MODEL = "fishaudio/s2.1-pro"
-lk agent console
-
-# Back to the Cartesia Sonic 3.5 default.
+# Back to the Fish Audio default.
 Remove-Item Env:\LOGISTICS_TTS_MODEL
 lk agent console
 
@@ -427,23 +447,13 @@ warning instead of silently re-enabling markup.
 
 ### What is and is not verified
 
-Unit tests pin the configuration plumbing only. **Cartesia's Chinese
-naturalness, the default voice's Mandarin pronunciation, and any broad
-improvement in audio artifacts are unverified** — the live evidence above is a
-small local comparison where Sonic 3.5 completed consecutive turns and Sonic 3
-stalled once, but that is not a real-speaker A/B. Record the same 5–10
-utterances (including a waybill read digit by digit), synthesize them through
-Sonic 3.5, the Sonic 3 and Sonic 3.6 A/B options and the Fish Audio rollback,
-and compare pronunciation, pauses, completion behaviour and artifacts. If the
-default voice sounds accented or unsuitable for Mandarin, point
-`LOGISTICS_TTS_VOICE` at a Cartesia multilingual or Chinese voice; no code edit
-is needed.
-
-If Sonic 3.5 ever shows the same stuck-speaking behaviour, switch with
-`LOGISTICS_TTS_MODEL` to another Cartesia model or Fish Audio and compare
-`lk agent logs`. Repeated `flush audio emitter` lines after a model switch
-point at synthesis running behind playback (provider load or network) rather
-than configuration.
+Unit tests pin the configuration plumbing only. The 2026-11-13 real-microphone
+A/B established that the selected Fish male voice was much smoother than
+Cartesia 3.5 and 3.6 in that session; it does not prove a general provider
+advantage. Repeat a fixed 5–10 utterance set, including a digit-by-digit
+waybill, before making broader pronunciation or reliability claims. Repeated
+`flush audio emitter` lines after a model switch indicate synthesis running
+behind playback (provider load or network), not an automatic fallback.
 
 ## Frontends and telephony
 

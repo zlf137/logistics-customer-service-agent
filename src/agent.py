@@ -9,7 +9,9 @@ from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
+    InterruptionOptions,
     JobContext,
+    PreemptiveGenerationOptions,
     RunContext,
     STTContextOptions,
     TurnHandlingOptions,
@@ -99,6 +101,27 @@ STT_INTERRUPTION_DELAY_MS = 250
 # min_turn_silence/max_turn_silence, which still govern finalisation.
 ASSEMBLYAI_ENDPOINTING_MIN_DELAY = 0.0
 
+# Interruption handling is separate from user-end detection above: the values
+# below decide whether the agent yields the floor while it is speaking, not
+# when the user has finished. The adaptive detector uses an acoustic model to
+# tell an intentional barge-in from a backchannel such as "嗯" or "好" and
+# keeps speaking through the latter. LiveKit Cloud and the local dev allowance
+# host this model by default; self-hosted use past that allowance is billed.
+# Falling back to VAD is automatic when the detector cannot be created.
+# Explicitly pinning "adaptive" is what stops the local/self-hosted Console
+# from using the VAD fallback; the other values are the documented defaults for
+# a patient "listen first, interrupt only with intent" start point.
+INTERRUPTION_MODE_ADAPTIVE = "adaptive"
+INTERRUPTION_MIN_DURATION_SECONDS = 0.5
+INTERRUPTION_MIN_WORDS = 0
+INTERRUPTION_RESUME_FALSE_INTERRUPTION = True
+INTERRUPTION_FALSE_INTERRUPTION_TIMEOUT_SECONDS = 2.0
+INTERRUPTION_BACKCHANNEL_BOUNDARY = (1.0, 1.0)
+
+# Preemptive generation starts the LLM reply before the turn is fully
+# confirmed, trading a little wasted work for lower perceived latency.
+PREEMPTIVE_GENERATION_ENABLED = True
+
 # Deepgram Nova-3 settings (rollback / A-B option).
 # Deepgram's own defaults already match most of these; sending them explicitly
 # pins the behaviour rather than trusting provider defaults to stay put.
@@ -115,23 +138,16 @@ DEEPGRAM_NUMERALS = True
 DEEPGRAM_PUNCTUATE = True
 DEEPGRAM_ENDPOINTING_MS = 800
 
-# Default: Cartesia Sonic 3.5 through LiveKit Inference, a mainstream
-# low-latency streaming voice-agent path offered through the gateway.
-# In the 2026-11-12 local live runs Sonic 3.5 was the only Cartesia model that
-# finished a session cleanly: it returned to listening and produced complete
-# Chinese assistant speech in consecutive turns, with observed TTS time-to-first
-# byte around 0.43-1.02 s. Protective "flush audio emitter due to slow audio
-# generation" debug lines varied from one to many without truncating those
-# turns. Sonic 3 in its comparison run had a lower TTFB but stayed stuck in the
-# speaking state past 30 s and emitted no final assistant conversation item.
-# This is single-run observation, not a statistical comparison.
-# That flush line is the TTS emitter releasing buffered audio before downstream
-# playback underruns, not an API error, so it does not trigger a server-side
-# fallback; completion and return to listening are the acceptance signals.
-# A/B and rollback options need no code edit:
-# LOGISTICS_TTS_MODEL=cartesia/sonic-3 or cartesia/sonic-3.6 for the other
-# Cartesia models, or LOGISTICS_TTS_MODEL=fishaudio/s2.1-pro for Fish Audio.
-DEFAULT_TTS_MODEL = "cartesia/sonic-3.5"
+# Default: Fish Audio S2.1 Pro through LiveKit Inference. In the 2026-11-13
+# same-device live A/B, Cartesia Sonic 3.5 repeatedly starved the audio emitter
+# for roughly 40 seconds and Sonic 3.6 also stuttered repeatedly. Fish Audio's
+# male voice completed the greeting and replies much more smoothly in the same
+# environment, though one later flush still occurred. This is a single-session
+# operational decision, not a general provider benchmark.
+# A/B options need no code edit:
+# LOGISTICS_TTS_MODEL=cartesia/sonic-3, cartesia/sonic-3.5, or
+# cartesia/sonic-3.6 switches back to Cartesia.
+DEFAULT_TTS_MODEL = "fishaudio/s2.1-pro"
 TTS_MODEL = os.getenv("LOGISTICS_TTS_MODEL", "").strip() or DEFAULT_TTS_MODEL
 TTS_LANGUAGE = "zh"
 
@@ -158,7 +174,7 @@ TTS_PROFILE_BASELINE = "baseline"
 TTS_PROFILES = (TTS_PROFILE_RELIABILITY, TTS_PROFILE_BASELINE)
 DEFAULT_TTS_PROFILE = TTS_PROFILE_RELIABILITY
 
-# Cartesia reliability knobs (the default provider). speed and volume stay
+# Cartesia A/B knobs. speed and volume stay
 # neutral. max_buffer_delay_ms bounds how long the provider may buffer text
 # before it starts generating audio: lower values cut latency at the cost of
 # prosody context, so 300 ms is an A/B starting point, not a tuned value.
@@ -168,7 +184,7 @@ CARTESIA_TTS_SPEED = 1.0
 CARTESIA_TTS_VOLUME = 1.0
 CARTESIA_TTS_MAX_BUFFER_DELAY_MS = 300
 
-# Fish Audio rollback knobs. "low" latency is avoided because it trades
+# Fish Audio default knobs. "low" latency is avoided because it trades
 # generation quality for speed and could worsen artifacts; lowering
 # temperature/top_p reduces sampling variance so repeated utterances sound
 # alike. speed stays at natural (1.0); 1.05 is the documented upper bound for
@@ -304,6 +320,23 @@ def stt_inference_kwargs(
     return kwargs
 
 
+def interruption_options() -> InterruptionOptions:
+    """Explicit adaptive interruption settings; the single source for them.
+
+    Kept separate from ``turn_handling_options()``'s provider switch so tests
+    can pin the interruption contract without touching user-end detection.
+    """
+
+    return InterruptionOptions(
+        mode=INTERRUPTION_MODE_ADAPTIVE,
+        min_duration=INTERRUPTION_MIN_DURATION_SECONDS,
+        min_words=INTERRUPTION_MIN_WORDS,
+        resume_false_interruption=INTERRUPTION_RESUME_FALSE_INTERRUPTION,
+        false_interruption_timeout=INTERRUPTION_FALSE_INTERRUPTION_TIMEOUT_SECONDS,
+        backchannel_boundary=INTERRUPTION_BACKCHANNEL_BOUNDARY,
+    )
+
+
 def turn_handling_options(model: str = STT_MODEL) -> TurnHandlingOptions:
     """Turn handling for ``model``; the single place turn detection is chosen.
 
@@ -315,14 +348,23 @@ def turn_handling_options(model: str = STT_MODEL) -> TurnHandlingOptions:
 
     Every other provider keeps the LiveKit TurnDetector and its own endpointing
     defaults, so the Deepgram rollback behaves exactly as before.
+
+    Adaptive interruption and preemptive generation are provider-independent,
+    so both modes get the same values; user-end detection is unchanged.
     """
 
+    options = TurnHandlingOptions(
+        interruption=interruption_options(),
+        preemptive_generation=PreemptiveGenerationOptions(
+            enabled=PREEMPTIVE_GENERATION_ENABLED
+        ),
+    )
     if stt_provider(model) == "assemblyai":
-        return TurnHandlingOptions(
-            turn_detection="stt",
-            endpointing={"min_delay": ASSEMBLYAI_ENDPOINTING_MIN_DELAY},
-        )
-    return TurnHandlingOptions(turn_detection=inference.TurnDetector())
+        options["turn_detection"] = "stt"
+        options["endpointing"] = {"min_delay": ASSEMBLYAI_ENDPOINTING_MIN_DELAY}
+    else:
+        options["turn_detection"] = inference.TurnDetector()
+    return options
 
 
 STT_PROFILE = resolve_stt_profile()
@@ -417,7 +459,7 @@ def cartesia_extra_kwargs(model: str, profile: str) -> dict[str, object]:
 def fishaudio_extra_kwargs(model: str, profile: str) -> dict[str, object]:
     """Provider-specific Fish Audio options, or ``{}`` for other models/profiles.
 
-    This is the rollback/A-B profile. Only provider-supported keys from Fish
+    This is the default Fish profile. Only provider-supported keys from Fish
     Audio's TTS docs are sent. Expressive markup is controlled by
     ``AgentSession(expressive=...)`` rather than here.
     """
@@ -714,23 +756,18 @@ async def my_agent(ctx: JobContext):
         # Turn handling is provider-aware. AssemblyAI Universal-3.6 Pro commits the
         # turn from its own end-of-turn signal with no added endpointing delay;
         # the Deepgram rollback and other models keep the LiveKit TurnDetector.
-        # See more at https://docs.livekit.io/agents/build/turns
-        turn_handling=TurnHandlingOptions(
-            **turn_handling_options(),
-            # Adaptive interruptions tell a real interruption from a
-            # backchannel like "mhm" or "right", so the agent keeps talking through the latter.
-            # This model is on by default on LiveKit Cloud and in dev mode. To use the model elsewhere,
-            # uncomment the `interruption` line. Self-hosted usage past the monthly allowance is billed.
-            # See https://docs.livekit.io/deploy/admin/quotas-and-limits/#adaptive-interruption-handling for more information.
-            # interruption={"mode": "adaptive"},
-            # allow the LLM to generate a response while waiting for the end of turn
-            # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
-            preemptive_generation={"enabled": True},
-        ),
+        # Adaptive interruption is explicitly enabled for the local/self-hosted
+        # Console path so real barge-ins are told apart from backchannels such as
+        # "嗯" or "好"; the detector is covered by the local dev allowance and
+        # self-hosted use past the monthly allowance is billed. Preemptive
+        # generation starts the reply while the turn is still being finalised.
+        # See https://docs.livekit.io/agents/build/turns and
+        # https://docs.livekit.io/agents/build/audio/#preemptive-generation
+        turn_handling=turn_handling_options(),
         # Expressive mode injects the TTS provider's markup guide into the LLM prompt, so the model
         # emits inline delivery tags (emotion, pacing, non-verbal sounds) that the TTS renders and
         # the transcript never shows. Requires a TTS model that supports markup, such as the Fish
-        # Audio rollback model. It is off by default: live tests heard short silences and occasional
+        # Expressive markup is off by default: live tests heard short silences and occasional
         # electronic artifacts around model-inserted <break> and emotion tags.
         # LOGISTICS_TTS_EXPRESSIVE=1 re-enables it for a same-utterance A/B.
         expressive=TTS_EXPRESSIVE,

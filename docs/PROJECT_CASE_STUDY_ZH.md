@@ -24,7 +24,7 @@
   -> LiveKit AgentSession / Gemma 4 31B
   -> 确定性工具与会话状态机
   -> Fleetbase API
-  -> Cartesia Sonic 3.5 中文 TTS
+  -> Fish Audio S2.1 Pro 中文男声 TTS
   -> 耳机或扬声器
 ```
 
@@ -34,7 +34,7 @@
 
 ### 2.1 综合版
 
-基于 LiveKit Agents、Python 与 Fleetbase 构建中文物流语音客服，实现运单精确查询、派送时段查询及跨回合确认改约；通过确定性状态机、精确匹配、乐观并发检查和幂等回读约束 LLM 工具调用，修复 STT 错号导致上游返回无关订单的高风险漏洞。针对中文长数字串完成 AssemblyAI/Deepgram STT 与 Cartesia/Fish Audio TTS A/B、provider-aware 回合检测和真人麦克风验收；本地回归测试达到 42/42 通过，并保留文本、音频模拟和只读后端 smoke 多层验证。
+基于 LiveKit Agents、Python 与 Fleetbase 构建中文物流语音客服，实现运单精确查询、派送时段查询及跨回合确认改约；通过确定性状态机、精确匹配、乐观并发检查和幂等回读约束 LLM 工具调用，修复 STT 错号导致上游返回无关订单的高风险漏洞。针对中文长数字串完成 AssemblyAI/Deepgram STT 与 Cartesia/Fish Audio TTS A/B、provider-aware 回合检测和真人麦克风验收；本地回归测试达到 44/44 通过，并保留文本、音频模拟和只读后端 smoke 多层验证。
 
 ### 2.2 偏后端与安全
 
@@ -46,7 +46,7 @@
 
 ### 2.4 简历量化点
 
-- 本地自动化回归测试：最近一次代码修改后 42/42 通过；Ruff lint 与 format 检查通过。
+- 本地自动化回归测试：最近一次代码修改后 44/44 通过；Ruff lint 与 format 检查通过。
 - Provider-aware 回合检测的同组小样本中，端到端延迟从约 3.05–4.50 秒降至约 2.03–2.62 秒。
 - 合成 8 位运单号小样本 A/B：AssemblyAI 完整转写 3/3，Deepgram Nova-3 为 2/3。该数据只能说明小样本方向，不能宣称普遍准确率。
 - LiveKit 文本模拟曾达到 5/5 通过，音频模拟 1/1 通过。
@@ -355,20 +355,17 @@ AssemblyAI Universal-3.6 Pro 已经提供自己的 end-of-turn，但早期配置
 
 第一个由 STT EOT 和 endpointing 控制；第二个由 interruption handling 控制。它们不能靠一个阈值同时解决。
 
-### 10.2 当前事实
+### 10.2 实现方案
 
-LiveKit 最新文档和本地 `livekit-agents==1.8.10` 源码都支持 adaptive interruption。它用声学模型区分真实 barge-in 与附和、短声和背景噪声，并支持误打断后续播。
+LiveKit 最新文档和本地 `livekit-agents==1.8.10` 源码都支持 adaptive interruption。项目不再依赖 production mode 下的默认行为，而是显式配置 `mode="adaptive"`、`min_duration=0.5`、`min_words=0`、`resume_false_interruption=True`、`false_interruption_timeout=2.0` 和 `backchannel_boundary=(1.0, 1.0)`。这套配置与 STT EOT 分离：前者只决定客服说话时是否让出话权，后者仍决定用户何时说完。
 
-但当前 `src/agent.py` 中 `interruption={"mode": "adaptive"}` 仍被注释。本地 Console 日志明确显示 adaptive interruption 在 production mode 下未启用，因此实际回退为 VAD 打断。
+### 10.3 验证与证据边界
 
-### 10.3 计划方案（尚未实现）
-
-- 本地显式启用 `mode="adaptive"`；
-- 保留 `resume_false_interruption=True`；
-- 对 `min_duration`、`min_words`、`false_interruption_timeout` 和 `backchannel_boundary` 做小范围 A/B；
-- 分别测试“嗯/好”“等等”“不对”“先别查”、背景碰撞声和客服句尾回答；
-- 单独对 AssemblyAI 的 `max_turn_silence` 做耐心倾听 A/B；
-- 记录真实打断成功率、误打断、被吞掉的短纠正和额外延迟。
+- 单元测试固定自适应打断和 provider-aware 回合检测的组合，44/44 通过；
+- 真人 Console 日志确认 detector 初始化并创建 session，没有回退为普通 VAD；
+- 用户在客服回复中说“你别说了”，检测器在约 0.55 秒处以约 0.86 概率判为真实打断，界面将回复标记为 `interrupted`，已真人验证明确 barge-in 能使客服停止；
+- 用户说“嗯”时客服已经结束上一句，因此该样本是新用户回合，不能据此声称 backchannel 不会误打断；背景噪声与误打断续播也仍待 A/B；
+- AssemblyAI `max_turn_silence` 未在本阶段修改，耐心倾听的用户端停顿问题仍需单独测试。
 
 不能简单关闭所有打断，因为真实客服必须允许用户说“停”“不对”“不要提交”。也不能只把 VAD 灵敏度调低，因为那会让真正的紧急纠正更难生效。
 
@@ -397,11 +394,10 @@ LiveKit 最新文档和本地 `livekit-agents==1.8.10` 源码都支持 adaptive 
 
 项目保留多条可回滚路径：
 
-- 默认 Cartesia Sonic 3.5；
-- Cartesia Sonic 3 / 3.6 环境变量 A/B；
-- Fish Audio S2.1 Pro 回滚。
+- 默认 Fish Audio S2.1 Pro 中文男声；
+- Cartesia Sonic 3 / 3.5 / 3.6 环境变量 A/B。
 
-Sonic 3.5 连续两轮均生成完整中文并回到 listening，TTFB 约 0.43–1.02 秒；Sonic 3 的一次对照超过 30 秒仍停在 speaking。因此选择 SDK 原生支持且实测更稳定的 Sonic 3.5 作为默认。
+2026-11-12 的早期对照中，Sonic 3.5 曾连续两轮生成完整中文并回到 listening，TTFB 约 0.43–1.02 秒，而 Sonic 3 一次超过 30 秒仍停在 speaking。2026-11-13 在相同麦克风、耳机和网络下重新真人 A/B：Sonic 3.5 约 40 秒内反复触发慢音频 flush，Sonic 3.6 仍明显断续；Fish Audio 男声能完成问候和回复，用户连续两次确认“很顺”，仅后续偶发一次 flush。因此当前默认切回 Fish。该结论是单次同场运维证据，不外推为通用供应商性能结论。
 
 ### 11.4 正确理解 `flush audio emitter`
 
@@ -485,7 +481,7 @@ Fleetbase 目前位于本机 `localhost:8000`。即使立即部署 LiveKit Cloud
 3. 后端安全：精确匹配、短号码拒绝、并发冲突、幂等；
 4. 会话状态：准备、跨回合确认、纠正、授权下游工具。
 
-最近一次相关代码修改后测试为 42/42 通过，Ruff lint 与 format 检查通过。
+最近一次相关代码修改后测试为 44/44 通过，Ruff lint 与 format 检查通过。
 
 ### 14.2 文本 debugger
 
@@ -575,10 +571,9 @@ STT、TTS、profile、voice 和 expressive 行为均保留环境变量开关。A
 
 ### P0：对话自然度
 
-- 显式启用并测试 adaptive interruption；
-- 保留误打断续播；
-- 分开调“用户说完”和“用户插话”两套机制；
-- 真人验证“嗯/好”不打断、“等等/不对/别提交”能立即打断。
+- 已显式启用 adaptive interruption，并真人验证“你别说了”能立即打断；
+- 继续验证“嗯/好”不误打断、背景噪声和误打断续播；
+- 单独 A/B AssemblyAI 停顿阈值，改善用户未说完时客服抢话的问题。
 
 ### P0：混合运单号规范化
 
@@ -630,7 +625,7 @@ STT 把运单号识别错后，上游列表接口没有可靠过滤，旧客户�
 
 ### 18.6 怎么处理用户打断？
 
-先区分“用户是否说完”和“客服说话时用户是否真想插话”。前者由 STT EOT/endpointing 决定，后者应使用 adaptive interruption 区分真实 barge-in 与“嗯、好”或噪声，并在误打断后续播。当前项目已完成调查，但显式启用和真人 A/B 仍待实现。
+先区分“用户是否说完”和“客服说话时用户是否真想插话”。前者由 STT EOT/endpointing 决定，后者显式使用 adaptive interruption 区分真实 barge-in 与“嗯、好”或噪声，并保留误打断续播。当前已验证 detector 初始化和“你别说了”真实打断；“嗯/好”不误打断、噪声和续播仍待真人 A/B。
 
 ### 18.7 如何证明没有误写数据库？
 
@@ -660,7 +655,7 @@ STT 把运单号识别错后，上游列表接口没有可靠过滤，旧客户�
 
 ### 结果（Result）
 
-修复了错号命中其他订单的高风险漏洞；纯数字运单已真人验证“识别—复述—确认—精确查询”；取消改约后直接回读确认无写入；最近相关代码达到 42/42 测试通过。provider-aware 回合检测在小样本中将端到端延迟从约 3.05–4.50 秒降至 2.03–2.62 秒。同时明确识别出混合运单号和自然打断仍是后续工作，没有把未验证项包装成完成项。
+修复了错号命中其他订单的高风险漏洞；纯数字运单已真人验证“识别—复述—确认—精确查询”；取消改约后直接回读确认无写入；最近相关代码达到 44/44 测试通过。provider-aware 回合检测在小样本中将端到端延迟从约 3.05–4.50 秒降至 2.03–2.62 秒。自适应打断已显式启用，并真人验证“你别说了”会终止客服回复；backchannel 与背景噪声仍明确保留为待验收项。
 
 ## 20. 代码与证据索引
 
@@ -685,6 +680,6 @@ STT 把运单号识别错后，上游列表接口没有可靠过滤，旧客户�
 
 - 简历中不要声称已部署 LiveKit Cloud；当前是本地/self-hosted 验证状态。
 - 不要把 3/3、2/3 小样本写成模型准确率百分比。
-- 不要声称 adaptive interruption 已实现；目前是已调研、待修改与真人 A/B。
+- adaptive interruption 可以描述为“已实现，明确打断已真人验证”；不要声称“嗯/好”和背景噪声已通过，因为这些样本尚未完成有效 A/B。
 - 不要公开 `.env.local`、Fleetbase 凭据、录音中的私人信息或本机路径。
 - 面试时优先讲一个高风险 bug、一个状态机设计和一个语音链路诊断，避免只罗列模型名称。
