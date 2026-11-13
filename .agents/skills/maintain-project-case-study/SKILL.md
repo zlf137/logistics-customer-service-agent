@@ -43,7 +43,7 @@ Before the push is considered ready:
 1. Run checks proportional to the milestone and record only checks that actually ran.
 2. Run `git diff --check` and scan the case-study diff for credential-like values and private data.
 3. Review the full pending push range and verify that the case study describes all interview-worthy changes without overstating them.
-4. Update the root `HANDOFF.md` when project state or evidence changed, following its retention rules.
+4. When project state or evidence changed, read `.agents/skills/maintain-handoff/SKILL.md` in full before updating the workspace-root `HANDOFF.md`; run its checker after the edit.
 5. Commit the documentation update with the milestone or as a separate documentation checkpoint. A push remains an external action and still requires the user's authorization.
 
 The canonical case study is `docs/PROJECT_CASE_STUDY_ZH.md`; the README should retain a discoverable link to it.

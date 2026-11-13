@@ -55,6 +55,6 @@ After editing:
 
 1. compare every statement with current repository/runtime facts;
 2. remove contradictions, superseded states, and repeated claims;
-3. count lines and non-whitespace characters and compress again if either budget is exceeded;
+3. run `python .agents/skills/maintain-handoff/scripts/check_handoff.py` from `logistics-livekit/`; fix every reported violation;
 4. confirm a fresh agent can identify the next safe work unit without reading history;
 5. report the resulting size when handing off.
