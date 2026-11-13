@@ -48,6 +48,10 @@ Important: when you modify core agent behavior such as instructions, tool descri
 
 Before a completed project phase is pushed, read and follow [`.agents/skills/maintain-project-case-study/SKILL.md`](.agents/skills/maintain-project-case-study/SKILL.md). Incrementally update `docs/PROJECT_CASE_STUDY_ZH.md` when implementation, verification evidence, runtime state, architecture decisions, risks, or meaningful next steps changed. Keep unverified work explicitly labeled and do not turn the document into a chronological activity log. A push still requires the user's authorization.
 
+## Workspace handoff maintenance
+
+Before every update to the workspace-root `../HANDOFF.md`, read and follow [`.agents/skills/maintain-handoff/SKILL.md`](.agents/skills/maintain-handoff/SKILL.md). Treat the handoff as a compact current-state snapshot, not a chronological log; replace superseded facts and enforce the skill's size budget.
+
 After changing the agent, try it with the [agent debugger](https://docs.livekit.io/testing/debugger/) (CLI 2.18.8 or later) before calling the change done. Start the agent with `lk agent debugger start`, send user turns with `lk agent debugger say "..."`, and read the tool calls in each turn as well as the reply. Run `lk agent debugger restart` after every code edit, since a running session keeps the old code, and `lk agent debugger stop` when you're done.
 
 ## Debugging
