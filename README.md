@@ -17,13 +17,17 @@ The starter includes:
 - [Expressive mode](https://docs.livekit.io/agents/models/tts/expressive/) support, disabled by default in this project so the agent's voice carries no model-inserted emotion or `<break>` markup; see [TTS configuration and rollback](#tts-configuration-and-rollback).
 - [Keyterms](https://docs.livekit.io/agents/models/stt/keyterms/), on by default, so speech recognition gets your names, brands, and jargon right, including names it picks up during the conversation, like a caller's.
 - Provider-aware turn handling: the default AssemblyAI STT supplies its own end-of-turn signal (`turn_detection="stt"` with no added endpointing delay), while the [LiveKit Turn Detector](https://docs.livekit.io/agents/logic/turns/turn-detector/) is retained for the Deepgram rollback and other models.
-- [Adaptive interruption handling](https://docs.livekit.io/agents/logic/turns/adaptive-interruption-handling/), which tells a real interruption from an "uh-huh" or background noise, so your agent doesn't stop talking when it shouldn't.
+- [Adaptive interruption handling](https://docs.livekit.io/agents/logic/turns/adaptive-interruption-handling/) is supported by the installed SDK, but is not yet explicitly enabled for the local Console path; the next tuning round will compare intentional barge-ins with backchannels and background noise.
 - [Background voice cancellation](https://docs.livekit.io/transport/media/noise-cancellation/).
 - Session transcripts, traces, and recordings from LiveKit [Agent Observability](https://docs.livekit.io/testing/observability/).
 - [Simulations](https://docs.livekit.io/testing/simulations/) that test full conversations with your agent, run in CI on every merge to `main`.
 - A `Dockerfile` for [deploying to LiveKit Cloud](https://docs.livekit.io/deploy/agents/).
 
 The starter works with any [custom web or mobile frontend](https://docs.livekit.io/frontends/) or with [telephony](https://docs.livekit.io/telephony/).
+
+## Project case study
+
+For a detailed Chinese engineering retrospective—including the production-style failure modes, safety design, A/B evidence, verification boundaries, resume-ready bullet points, and interview talking points—see [中文物流语音客服：问题、方案与工程复盘](docs/PROJECT_CASE_STUDY_ZH.md).
 
 ## Using coding agents
 
