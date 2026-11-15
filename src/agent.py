@@ -727,8 +727,8 @@ class Assistant(Agent):
 server = AgentServer()
 
 
-@server.rtc_session(agent_name="my-agent")
-async def my_agent(ctx: JobContext):
+@server.rtc_session(agent_name="logistics-customer-service")
+async def logistics_agent(ctx: JobContext):
     # Logging setup
     # Add any other context you want in all log entries here
     ctx.log_context_fields = {

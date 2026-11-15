@@ -1,12 +1,12 @@
-# Simulation scenarios for the starter assistant. Each one is a conversation a
+# Simulation scenarios for the logistics voice agent. Each one is a conversation a
 # simulated user has with your agent, judged against agent_expectations. Run them
-# with `lk agent simulate text --scenarios scenarios.yaml`; the Simulations workflow
-# runs them on every merge to main.
+# with `lk agent simulate text --scenarios scenarios.yaml`; the manual Simulations
+# workflow runs the same suite only when explicitly dispatched because it uses paid inference.
 #
 # Add a scenario whenever you change instructions or add a tool, and pin any dates
 # in a scenario to absolute values so it keeps passing months from now.
 id: SCNG_SHoTfk2JhD4m
-name: Starter assistant
+name: Chinese logistics voice agent
 scenarios:
   - id: SCN_fleetbase_reschedule_confirmed
     label: Fleetbase-backed reschedule requires confirmation

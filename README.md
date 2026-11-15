@@ -1,142 +1,136 @@
-<a href="https://livekit.io/">
-  <img src="./.github/assets/livekit-mark.png" alt="LiveKit logo" width="100" height="100">
-</a>
+# 中文物流实时语音 Agent
 
-# LiveKit Agents starter for Python
+[![CI](https://github.com/zlf137/logistics-customer-service-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/zlf137/logistics-customer-service-agent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A starter project for building voice AI apps with [LiveKit Agents for Python](https://github.com/livekit/agents) and [LiveKit Cloud](https://cloud.livekit.io/).
+面向真实物流查询与改约流程的中文实时语音 Agent。项目重点不是让模型“尽量猜对”，而是把概率性的 STT 与 LLM 约束在可验证的状态机、精确匹配、并发检查和后端回读中，使识别错误最多退化为安全失败，不能演变成查错订单或误改约。
 
-The starter includes:
+`Python 3.12` · `LiveKit Agents` · `LLM Function Calling` · `Fleetbase` · `pytest` · `GitHub Actions`
 
-- A simple [voice AI assistant](https://docs.livekit.io/agents/start/voice-ai/) to extend and customize.
-- A voice pipeline built on [LiveKit Inference](https://docs.livekit.io/agents/models/inference/), which gives you access to [models](https://docs.livekit.io/agents/models/) from top labs with no extra configuration:
-  - The default LLM is Gemma 4 31B, an open-weight model [hosted by LiveKit](https://docs.livekit.io/agents/models/llm/livekit/) and tuned for voice AI.
-  - The default TTS is [Fish Audio S2.1 Pro](https://docs.livekit.io/agents/models/tts/fishaudio/) with the smoother male voice selected by the 2026-11-13 live A/B; Cartesia Sonic 3, 3.5 and 3.6 remain env-only A/B options.
-  - More than 50 other models are available from OpenAI, Cartesia, Deepgram, and other providers.
-  - [Realtime models](https://docs.livekit.io/agents/models/realtime/) such as OpenAI GPT-Live. Many other models are available through the [plugin ecosystem](https://docs.livekit.io/agents/models/#plugins).
-- [Expressive mode](https://docs.livekit.io/agents/models/tts/expressive/) support, disabled by default in this project so the agent's voice carries no model-inserted emotion or `<break>` markup; see [TTS configuration and rollback](#tts-configuration-and-rollback).
-- [Keyterms](https://docs.livekit.io/agents/models/stt/keyterms/), on by default, so speech recognition gets your names, brands, and jargon right, including names it picks up during the conversation, like a caller's.
-- Provider-aware turn handling: the default AssemblyAI STT supplies its own end-of-turn signal (`turn_detection="stt"` with no added endpointing delay), while the [LiveKit Turn Detector](https://docs.livekit.io/agents/logic/turns/turn-detector/) is retained for the Deepgram rollback and other models.
-- [Adaptive interruption handling](https://docs.livekit.io/agents/logic/turns/adaptive-interruption-handling/) is explicitly enabled for the local/self-hosted Console path (`mode="adaptive"`, 0.5 s minimum, backchannel boundary 1.0/1.0, false-interruption resume after 2.0 s). A real-microphone run verified that “你别说了” stopped an active reply; backchannels and background noise still need valid A/B coverage. The detector is covered by the local dev allowance on LiveKit Cloud; self-hosted use past the monthly allowance is billed, and the SDK falls back to VAD if the detector cannot be created.
-- [Background voice cancellation](https://docs.livekit.io/transport/media/noise-cancellation/).
-- Session transcripts, traces, and recordings from LiveKit [Agent Observability](https://docs.livekit.io/testing/observability/).
-- [Simulations](https://docs.livekit.io/testing/simulations/) that test full conversations with your agent, run in CI on every merge to `main`.
-- A `Dockerfile` for [deploying to LiveKit Cloud](https://docs.livekit.io/deploy/agents/).
+> 当前状态：核心流程已在本地/self-hosted 环境完成自动化、模拟、后端 smoke 与部分真人麦克风验证；**尚未部署 LiveKit Cloud Agent**，云端目前也不能访问本机 Fleetbase。不要将本项目描述为已上线生产。
 
-The starter works with any [custom web or mobile frontend](https://docs.livekit.io/frontends/) or with [telephony](https://docs.livekit.io/telephony/).
+## 核心工程亮点
 
-## Project case study
+- 运单查询采用“捕获候选 → 逐字符复述 → 后续用户消息确认 → 精确查询”，同一用户消息不能直接触发查询。
+- 改约采用“准备 → 后续独立确认 → 提交”，提交前重查订单版本，提交后回读，覆盖并发冲突和幂等成功。
+- 支持全角折叠、空格/连字符清理、纯中文逐位数字以及“ASCII 字母 + 中文逐位数字”的确定性规范化；拒绝中文单位数词与模糊匹配。
+- 根据 STT provider 选择原生 EOT 或 LiveKit Turn Detector，并保留 AssemblyAI/Deepgram、Fish Audio/Cartesia 的环境变量 A/B 与回滚路径。
+- 使用单元测试、文本 debugger、音频 simulation、只读 Fleetbase smoke 和真人 Console 分层验证，不把“已实现”当作“已验证”。
 
-For a detailed Chinese engineering retrospective—including the production-style failure modes, safety design, A/B evidence, verification boundaries, resume-ready bullet points, and interview talking points—see [中文物流语音客服：问题、方案与工程复盘](docs/PROJECT_CASE_STUDY_ZH.md).
+## 演示与复盘
 
-## Using coding agents
+- [两分钟演示脚本与镜头表](docs/DEMO_SCRIPT_ZH.md)：使用合成数据演示查询、跨回合确认、失败安全和语音打断，并明确写入前的授权边界。
+- [中文工程复盘](docs/PROJECT_CASE_STUDY_ZH.md)：故障根因、设计取舍、验证证据、简历摘要与面试问答。
 
-This project works with coding agents like [Claude Code](https://claude.com/product/claude-code), [Cursor](https://www.cursor.com/), and [Codex](https://openai.com/codex/).
+## 架构
 
-LiveKit offers both a CLI and an [MCP server](https://docs.livekit.io/reference/developer-tools/docs-mcp/) for browsing and searching its documentation. Search returns short excerpts, so fetch the full page to read the details:
-
-```console
-lk docs search "testing my agent"
-lk docs get-page /testing/unit-tests
+```mermaid
+flowchart LR
+    U[用户语音或 lk.chat 文本] --> LK[LiveKit AgentSession]
+    LK --> STT[STT<br/>AssemblyAI 默认 / Deepgram 回滚]
+    STT --> LLM[Gemma 4 31B<br/>理解意图与确认语义]
+    LLM --> GATE[确定性业务门禁<br/>跨回合确认 / 状态机 / 精确匹配]
+    GATE --> FB[Fleetbase API<br/>订单 / 时段 / 改约]
+    FB --> VERIFY[版本检查与提交后回读]
+    VERIFY --> LLM
+    LLM --> TTS[TTS<br/>Fish Audio 默认 / Cartesia A-B]
+    TTS --> LK --> U
 ```
 
-The project also includes an [`AGENTS.md`](AGENTS.md) file, so your coding agent follows LiveKit's best practices for workflows, handoffs, and testing, and tries its changes with the [agent debugger](https://docs.livekit.io/testing/debugger/).
+高风险写入不由 prompt 单独决定：
 
-For more guidance at each stage of the work, from building and debugging to testing and deploying, install LiveKit's [agent skills](https://docs.livekit.io/intro/coding-agents/#agent-skills). The CLI installs them for the coding agents on your machine and adds the Docs MCP server to their config. `lk agent init` offers to do this when it creates your project, or you can run it yourself:
-
-```console
-lk skills install
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as Voice Agent
+    participant S as 确定性状态机
+    participant F as Fleetbase
+    U->>A: 选择新的派送时段
+    A->>S: prepare_reschedule
+    S-->>A: 保存提案与确认要求
+    A-->>U: 复述运单号与目标时段
+    Note over U,S: 当前用户消息禁止提交
+    U->>A: 后续消息明确确认
+    A->>S: commit_reschedule
+    S->>F: 重查订单版本
+    alt 订单未变化
+        F-->>S: 返回当前版本
+        S->>F: 提交并回读
+        F-->>S: 返回最终状态
+        S-->>A: 返回已验证的工具结果
+        A-->>U: 仅报告后端确认的最终状态
+    else 并发变化或超时不明
+        S-->>A: 返回冲突或不确定状态
+        A-->>U: 安全失败，要求重新查询或确认
+    end
 ```
 
-Run `lk skills update` to get the latest skills, and commit `skills-lock.json` along with them. See the [coding agents guide](https://docs.livekit.io/intro/coding-agents/) for more details.
+## 验证快照
 
-## Dev setup
+| 层级 | 最近证据 | 边界 |
+| --- | --- | --- |
+| 本地回归 | 47/47、Ruff lint/format、YAML/内部链接与 `git diff --check` 通过（2026-11-15） | 确定性逻辑、配置与作品集文档 |
+| 文本 debugger | 混合口述运单先复述，后续确认才精确查询 | 不经过 STT/TTS |
+| LiveKit simulation | 文本 5/5、音频 1/1 曾通过 | 使用合成数据和云端推理 |
+| Fleetbase smoke | 订单命中并返回 3 个时段；默认只读 | 最近一次未提交改约 |
+| 真人 Console | 8 位纯数字流程通过；明确打断约 0.55 秒生效 | 混合运单、backchannel 与背景噪声仍待完整 A/B |
 
-Install the [LiveKit CLI](https://docs.livekit.io/intro/basics/cli/), version 2.18.8 or later:
+这些数字是特定版本和小样本证据，不代表通用模型准确率。以当前 checkout 重新运行验证为准。
 
-- **macOS:** `brew install livekit-cli`
-- **Linux:** `curl -sSL https://get.livekit.io/cli | bash`
-- **Windows:** `winget install LiveKit.LiveKitCLI`
+## 快速开始
 
-Check your version with `lk --version`. To update an existing install, see [Update the CLI](https://docs.livekit.io/reference/developer-tools/livekit-cli/#updates).
-
-Then create a project from this template. The CLI clones the template and configures your environment:
-
-```console
-lk cloud auth
-lk agent init my-agent --template agent-starter-python
-```
-
-<details>
-<summary>Set up the project manually</summary>
-
-Clone the repository and install dependencies into a virtual environment with [uv](https://docs.astral.sh/uv/):
+需要 Python 3.10–3.14、[uv](https://docs.astral.sh/uv/) 和 [LiveKit CLI](https://docs.livekit.io/reference/developer-tools/livekit-cli/)。
 
 ```console
-git clone https://github.com/livekit-examples/agent-starter-python.git
-cd agent-starter-python
-uv sync
+git clone https://github.com/zlf137/logistics-customer-service-agent.git
+cd logistics-customer-service-agent
+uv sync --locked --dev
 ```
 
-Sign up for [LiveKit Cloud](https://cloud.livekit.io/), then copy `.env.example` to `.env.local` and fill it in. To have the CLI write your project's URL and API keys into the file instead, run:
+复制 `.env.example` 为本地 `.env.local`，填入自己的开发凭据；不要提交或公开任何 `.env*`。本机 Fleetbase 连接另行使用未版本化的 `.env.fleetbase.local`。
 
-```console
-lk cloud auth
-lk app env --write --destination .env.local
-```
+仓库中的 [`AGENTS.md`](AGENTS.md) 记录 LiveKit 文档、调试、simulation 与交接要求。涉及 LiveKit API 时先查阅当前官方文档；修改核心会话行为时先补 scenario，再使用 debugger 和分层验证证明结果。
 
-</details>
+## 运行与验证
 
-## Run the agent
-
-The `lk agent console`, `lk agent dev`, and `lk agent debugger` commands run your agent on your own machine. To talk to it in your terminal:
+本地真实语音 Console：
 
 ```console
 lk agent console
 ```
 
-To connect it to LiveKit Cloud so a frontend, a phone call, or the [Agent Console](https://docs.livekit.io/testing/agent-console/) can reach it:
+连接 LiveKit Cloud 的本地开发 worker。它不会创建 Cloud 部署：
 
 ```console
 lk agent dev
 ```
 
-To let a coding agent or a script test it one text turn at a time, use the [agent debugger](https://docs.livekit.io/testing/debugger/). Each turn prints the agent's reply along with the tool calls and handoffs behind it:
+文本逐回合调试：
 
 ```console
-lk agent debugger start
-lk agent debugger say "Hi, what can you do?"
-lk agent debugger stop
-```
-
-### Test without a physical microphone
-
-The project has two supported microphone-free paths:
-
-```console
-# Fast turn-by-turn logic checks; skips STT and TTS.
 lk agent debugger start
 lk agent debugger say "你好，我想查询运单状态。"
 lk agent debugger stop
-
-# Release-candidate audio smoke test; exercises STT, turn detection, tools, and TTS.
-lk agent simulate audio --scenarios scenarios.audio.yaml --concurrency 1 --yes
 ```
 
-The audio scenario uses only the unmistakably synthetic numeric waybill `12345678`.
-It may be sent to LiveKit Cloud for simulation; do not replace it with customer data.
-For the cheaper full behavior regression, run:
+确定性检查无需云端凭据：
+
+```console
+uv run ruff check .
+uv run ruff format --check .
+uv run python -m pytest
+```
+
+需要真实推理额度的模拟只在本地显式执行，GitHub `Simulations` workflow 也仅支持手动触发：
 
 ```console
 lk agent simulate text --scenarios scenarios.yaml --concurrency 1 --yes
+lk agent simulate audio --scenarios scenarios.audio.yaml --concurrency 1 --yes
 ```
 
-Validated on 2026-11-07, before the STT/TTS tuning documented below: 8 local
-tests passed, the audio smoke test passed 1/1 (`SR_hudV2gQ6NfY5`), and the full
-text suite passed 4/4 (`SR_UAzNgTjgZcSK`). The test suite has grown since; rerun
-it rather than relying on that count.
+模拟文件只使用合成数据，不要替换成客户数据。
 
-In production, run the agent directly:
+直接运行 worker：
 
 ```console
 uv run src/agent.py start
@@ -476,11 +470,12 @@ order can never unlock a slot query for another.
 
 Validation stays exact. `FleetbaseClient.normalize_waybill()` applies NFKC
 full-width folding, then strips whitespace and hyphens and uppercases the
-result. A value made up only of Chinese digit characters
-(`零〇○一二三四五六七八九幺`) is converted one character at a time, so
-`幺二三四五六七八` becomes `12345678`. Values that mix Chinese digits with unit
-words such as `十`, `百`, `千` or `万` are left untouched and fail the exact
-match, because a unit reading is ambiguous; there is no fuzzy or
+result. Chinese digit characters (`零〇○一二三四五六七八九幺`) are converted
+one character at a time when the candidate is either all digits or an ASCII
+alphanumeric identifier, so `幺二三四五六七八` becomes `12345678` and
+`log九一一三一八零四三八sg` becomes `LOG9113180438SG`. Values that mix Chinese
+digits with unit words such as `十`, `百`, `千` or `万` are left untouched and
+fail the exact match, because a unit reading is ambiguous; there is no fuzzy or
 nearest-number matching anywhere in the path. Numbers shorter than eight
 characters are rejected as incomplete before any request is made.
 
@@ -517,22 +512,21 @@ Simulations run full multi-turn conversations between a simulated user and your 
 lk agent simulate text --scenarios scenarios.yaml
 ```
 
-The `Simulations` workflow in [`.github/workflows/simulations.yml`](.github/workflows/simulations.yml) runs the same file on every merge to `main`, and on demand from the Actions tab. It doesn't run on every pull request push because each run uses real inference. See the [simulations guide](https://docs.livekit.io/testing/simulations/) for how to write scenarios and read results.
+The `Simulations` workflow in [`.github/workflows/simulations.yml`](.github/workflows/simulations.yml) is manual-only because it needs repository secrets and spends real inference credits. The keyless [CI workflow](.github/workflows/ci.yml) runs Ruff lint, Ruff format checking, and pytest on every push and pull request. See the [simulations guide](https://docs.livekit.io/testing/simulations/) for how to write scenarios and read results.
 
-To check a change turn by turn without a live session, use the [agent debugger](https://docs.livekit.io/testing/debugger/) shown in [Run the agent](#run-the-agent).
+To check a change turn by turn without a live session, use the [agent debugger](https://docs.livekit.io/testing/debugger/) shown in [运行与验证](#运行与验证).
 
 To debug a running agent, open it in the [Agent Console](https://docs.livekit.io/testing/agent-console/). It shows events, tool calls, and model timing as you talk to the agent. To stream logs from a deployed agent, run `lk agent logs`.
 
-## Using this template for your own project
+## 上游来源与许可
 
-After you create your own project from this template:
+本项目从 LiveKit 官方 [`agent-starter-python`](https://github.com/livekit-examples/agent-starter-python) 改造而来，保留其 MIT License 与上游参考；作品仓库使用独立的包名、Agent 名称、业务状态和验证材料。`upstream` 用于对照 SDK 推荐实践，不是本项目的发布或更新源。
 
-- **Commit `uv.lock`.** The template doesn't track it, but your project should, for reproducible builds. If you deploy to LiveKit Cloud, commit `livekit.toml` too.
-- **Add repository secrets.** Add `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` as [repository secrets](https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/using-secrets-in-github-actions) so the simulations can run in CI.
+`uv.lock` 已纳入版本控制以保证可复现安装。只有需要手动运行云端 simulation 时，才在 GitHub repository secrets 中配置 `LIVEKIT_URL`、`LIVEKIT_API_KEY` 和 `LIVEKIT_API_SECRET`；不要把值写入仓库。
 
-## Deploying to production
+## 部署边界
 
-To deploy the agent to LiveKit Cloud or another environment with the included `Dockerfile`, see the [deployment guide](https://docs.livekit.io/deploy/agents/).
+仓库包含可用于 LiveKit Cloud 或其他环境的 `Dockerfile`，但当前项目尚未完成 Cloud Agent 部署，且本机 Fleetbase 对云容器不可达。准备公开演示前必须先解决后端可达性、演示数据隔离和凭据管理，再按[部署指南](https://docs.livekit.io/deploy/agents/)验收。
 
 ## Self-hosted LiveKit
 
