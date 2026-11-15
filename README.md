@@ -221,7 +221,7 @@ pins it through `interruption_options()` for every STT provider:
 
 | Option | Value | Why |
 |--------|-------|-----|
-| `mode` | `"adaptive"` | Uses the acoustic interruption detector instead of plain VAD, so short backchannels such as "嗯" or "好" do not cut the agent off. Without this explicit mode the local/self-hosted Console falls back to VAD. |
+| `mode` | `"adaptive"` | Uses the acoustic interruption detector instead of plain VAD when the detector service is available, so it can distinguish short backchannels such as "嗯" or "好" from a real barge-in. Without this explicit mode the local/self-hosted Console falls back to VAD. |
 | `min_duration` | `0.5` s | Speech shorter than this is not treated as an interruption. |
 | `min_words` | `0` | No additional word-count gate for a short barge-in. |
 | `resume_false_interruption` | `true` | Continues the interrupted reply when the overlap is classified as false. |
@@ -238,10 +238,13 @@ Unit tests pin these values and the separation from provider-aware turn
 detection. In the 2026-11-13 real-microphone run, the detector initialized
 without VAD fallback and classified “你别说了” as a real interruption after
 about 0.55 seconds (about 0.86 probability); the active reply was marked
-`interrupted`. “嗯” was spoken only after the previous reply had ended, so it
-does not verify backchannel suppression. Background-noise and false-resume A/B
-remain open, and the AssemblyAI `min_turn_silence`/`max_turn_silence` values
-were deliberately not changed in this round.
+`interrupted`. In a separate 2026-11-15 run, the detector created its session
+but then returned a 0.8-second inference timeout (HTTP 408), so the SDK disabled
+it and fell back to plain VAD. After that fallback, a filler “哎” interrupted
+the waybill read-back. This is availability/fallback evidence, not a successful
+backchannel-suppression result. Background-noise and false-resume A/B remain
+open, and the AssemblyAI `min_turn_silence`/`max_turn_silence` values were
+deliberately not changed in this round.
 
 ### Rollback / A-B: Deepgram Nova-3
 
@@ -447,7 +450,10 @@ Cartesia 3.5 and 3.6 in that session; it does not prove a general provider
 advantage. Repeat a fixed 5–10 utterance set, including a digit-by-digit
 waybill, before making broader pronunciation or reliability claims. Repeated
 `flush audio emitter` lines after a model switch indicate synthesis running
-behind playback (provider load or network), not an automatic fallback.
+behind playback (provider load or network), not an automatic fallback. The
+2026-11-15 live run produced several of these lines with perceptible response
+delay, while replies still completed; it is degradation evidence rather than a
+failed TTS request.
 
 ## Frontends and telephony
 
