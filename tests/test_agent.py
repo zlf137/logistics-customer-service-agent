@@ -441,7 +441,13 @@ def test_tts_profile_and_expressive_overrides_are_validated() -> None:
         assert resolve_tts_expressive(value) is False
 
 
-def test_assistant_requires_later_confirmation() -> None:
+def test_assistant_requires_later_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The inference client validates credentials at construction time. Unit tests
+    # never call the network, so use explicit synthetic values instead of relying
+    # on a developer's untracked .env.local file.
+    monkeypatch.setenv("LIVEKIT_API_KEY", "test-api-key")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-api-secret-with-at-least-32-bytes")
+
     instructions = Assistant(FakeFleetbase()).instructions
     assert "准备和提交绝不能发生在同一用户消息" in instructions
     assert "后续一轮明确确认" in instructions
