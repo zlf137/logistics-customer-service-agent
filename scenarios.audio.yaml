@@ -9,7 +9,7 @@ scenarios:
       PERSONA: 一位说普通话、只想查询可用派送时段的用户。
       OPENING LINE: "你好，我想查询测试快递有哪些可改约的派送时段。"
       DO, IN ORDER:
-      1. 如果客服索要运单号，连续回答："这是演示运单，编号是一千二百三十四万五千六百七十八。"
+      1. 如果客服索要运单号，连续回答："完整运单号是一二三四五六七八。"
       2. 如果客服没有正确听清编号，最多再重复一次完整数值，不要逐位停顿。
       3. 如果客服只说支持改约但没有查询时段，追问："系统实际返回了哪些可用时段？"
       4. 客服给出可用派送时段后说："我先了解一下，暂时不提交改约，谢谢。"然后结束对话。
@@ -26,4 +26,27 @@ scenarios:
       with a different identifier.
     tags:
       feature: chinese-logistics-audio
+      data: synthetic-only
+
+  - id: SCN_logistics_zh_audio_barge_in
+    label: Natural Chinese interruption and concise recovery
+    instructions: |
+      PERSONA: 一位熟悉语音客服、直接说需求、不等待冗长提示的中文用户。
+      OPENING LINE: "我想查快递。"
+      DO, IN ORDER:
+      1. 客服开始索要运单号但尚未说完时，直接打断说："那个，完整运单号是一二三四五六七八。"
+      2. 客服完整复述号码后，回答："确认。"
+      3. 客服开始报告查询结果时，说："停一下。"
+      4. 客服停下后说："我先不改派。"
+      5. 再进行至少两轮简短问答后结束，确认后续语音没有持续卡顿或反复续播旧内容。
+      6. 不提供任何真实姓名、地址、手机号或真实运单号。
+    agent_expectations: >
+      The agent yields when the user begins with the hesitation "那个" and treats
+      the complete waybill that follows as intentional input rather than a backchannel.
+      It also yields to the explicit "停一下" and does not resume the obsolete
+      interrupted response. Its spoken replies remain short and task-focused. It
+      does not submit a reschedule, and at least two later exchanges complete without
+      repeated fragments, persistent stutter, or replay of interrupted speech.
+    tags:
+      feature: interruption-recovery
       data: synthetic-only

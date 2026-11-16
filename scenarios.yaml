@@ -58,25 +58,28 @@ scenarios:
       feature: chinese-logistics-intake
 
   - id: SCN_wbReadBack2Qm4X
-    label: Corrects a waybill before lookup
+    label: Partial correction requires the full waybill
     instructions: |
-      PERSONA: 一位口述运单号、先说错一位再纠正的中文用户。
+      PERSONA: 一位口述运单号、先指出局部错误再完整重说的中文用户。
       OPENING LINE: "你好，帮我查一下运单 12345679。"
       DO, IN ORDER:
       1. 客服复述号码并询问是否正确时，回答："不对，最后一位是八，不是九。"
-      2. 客服再次复述时回答："对，就是 12345678。"
-      3. 客服报告查询结果后结束对话。
+      2. 客服要求完整号码后，回答："完整运单号是 12345678。"
+      3. 客服再次复述时回答："对，就是 12345678。"
+      4. 客服报告查询结果后结束对话。
     agent_expectations: >
       The agent calls prepare_waybill_lookup and reads the candidate back instead
-      of querying immediately. After the correction it calls prepare_waybill_lookup
-      again with the new number and reads that back too. It calls lookup_waybill
-      only after the second, later confirmation, and every status fact comes from
-      that tool result. It never reports a result for the rejected number.
+      of querying immediately. It does not infer or construct 12345678 from the
+      user's partial correction and does not call a tool with that inferred value.
+      It briefly asks for the full waybill number. Only after the user supplies
+      the complete 12345678 value does it call prepare_waybill_lookup again and
+      read that candidate back. It calls lookup_waybill only after the later
+      confirmation, and never reports a result for the rejected number.
     tags:
       feature: waybill-confirmation
 
   - id: SCN_hGnGFBNuvJbj
-    label: Greets and offers help
+    label: Starts with a minimal intake question
     instructions: |
       PERSONA: A first-time user who just connected and is curious what this assistant does.
       OPENING LINE: "Hello!"
@@ -84,9 +87,10 @@ scenarios:
       1. After the assistant replies, ask: "What can you help me with?"
       2. Once it answers, say thanks and end the conversation.
     agent_expectations: >
-      The agent starts the conversation by enthusiastically greeting the user and offering
-      to help. Replies are brief, one to three sentences, in plain spoken prose
-      with no lists, markdown, or emojis.
+      The agent starts with one short functional question about the logistics task,
+      without enthusiastic greetings, small talk, repeated politeness, or a description
+      of its capabilities. Replies use plain spoken prose with no lists, markdown,
+      or emojis and ask at most one necessary question at a time.
     tags:
       feature: greeting
 

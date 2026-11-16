@@ -71,29 +71,56 @@ class LogisticsSessionState:
     pending_waybill: WaybillCandidate | None = None
     confirmed_waybill: str | None = None
 
+    @staticmethod
+    def validate_waybill_number(value: str) -> str:
+        """Normalize a freshly dictated number and reject unsafe shapes.
+
+        A usable waybill is non-empty, made only of ASCII letters and digits,
+        and at least ``MIN_WAYBILL_LENGTH`` characters long. An incomplete
+        dictation and an invalid format raise different errors so the agent can
+        give a specific prompt instead of guessing.
+        """
+
+        normalized = FleetbaseClient.normalize_waybill(value)
+        if not normalized:
+            raise FleetbaseConflictError(
+                "The waybill number is incomplete; ask the user to say the "
+                "complete number"
+            )
+        if not normalized.isascii() or not normalized.isalnum():
+            raise FleetbaseConflictError(
+                "The waybill number has an invalid format; ask the user to say "
+                "the complete number with letters and digits only"
+            )
+        if len(normalized) < MIN_WAYBILL_LENGTH:
+            raise FleetbaseConflictError(
+                "The waybill number is incomplete; ask the user to say the "
+                "complete number"
+            )
+        return normalized
+
     def prepare_waybill_lookup(
         self, waybill_number: str, user_message_id: str
     ) -> dict[str, Any]:
         """Store the normalized candidate and return the read-back payload.
 
         Preparing never queries Fleetbase. A new candidate always overwrites the
-        old one, so "no, that is wrong" followed by a fresh dictation simply
-        starts another read-back.
+        old one, so a complete new dictation simply starts another read-back.
+        A local correction of the previous candidate must go through
+        ``reject_waybill_candidate()`` instead, because a fragment can never be
+        merged with the old number here.
         """
 
-        normalized = FleetbaseClient.normalize_waybill(waybill_number)
-        if len(normalized) < MIN_WAYBILL_LENGTH:
-            raise FleetbaseConflictError(
-                "The waybill number is incomplete; ask the user to repeat the "
-                "full number"
-            )
+        normalized = self.validate_waybill_number(waybill_number)
         self.pending_waybill = WaybillCandidate(
             waybill_number=normalized,
             prepared_user_message_id=user_message_id,
         )
         # A newly supplied number starts a fresh verification flow. Do not let
-        # a previously confirmed order authorize slot queries for this one.
+        # a previously confirmed order or reviewed reschedule authorize work
+        # for this one.
         self.confirmed_waybill = None
+        self.proposals.clear()
         return {
             "candidate_waybill": normalized,
             "digit_by_digit": " ".join(normalized),
@@ -132,6 +159,27 @@ class LogisticsSessionState:
         """Drop the pending candidate once a lookup has been attempted."""
 
         self.pending_waybill = None
+
+    def reject_waybill_candidate(self) -> dict[str, Any]:
+        """Explicitly discard a partially corrected candidate; no backend I/O.
+
+        A local correction such as "the last digit is eight" cannot be merged
+        with the old candidate. Clearing both the pending read-back and any
+        confirmed waybill makes a later tool call fail closed until the user
+        dictates a complete number again.
+        """
+
+        self.pending_waybill = None
+        self.confirmed_waybill = None
+        self.proposals.clear()
+        return {
+            "candidate_rejected": True,
+            "requires_full_restatement": True,
+            "instruction": (
+                "The old candidate is discarded. Ask the user to say the "
+                "complete waybill number again; do not reuse or extend it."
+            ),
+        }
 
     def record_confirmed_waybill_result(
         self, waybill_number: str, result: dict[str, Any]

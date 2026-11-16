@@ -1,7 +1,7 @@
 # ruff: noqa: RUF001
 
 import pytest
-from livekit.agents import inference
+from livekit.agents import UserTranscriptionTimeoutEvent, inference
 
 from agent import (
     ASSEMBLYAI_ENDPOINTING_MIN_DELAY,
@@ -14,12 +14,15 @@ from agent import (
     DEFAULT_TTS_MODEL,
     DEFAULT_TTS_PROFILE,
     FISH_AUDIO_TTS_VOICE,
-    INTERRUPTION_BACKCHANNEL_BOUNDARY,
+    INITIAL_PROMPT,
     INTERRUPTION_FALSE_INTERRUPTION_TIMEOUT_SECONDS,
     INTERRUPTION_MIN_DURATION_SECONDS,
     INTERRUPTION_MIN_WORDS,
-    INTERRUPTION_MODE_ADAPTIVE,
+    INTERRUPTION_MODE_VAD,
     INTERRUPTION_RESUME_FALSE_INTERRUPTION,
+    INTERRUPTION_TEST_PROMPT,
+    MISSED_SPEECH_MIN_DURATION_SECONDS,
+    MISSED_SPEECH_PROMPT,
     PREEMPTIVE_GENERATION_ENABLED,
     STT_CONTINUOUS_PARTIALS,
     STT_INTERRUPTION_DELAY_MS,
@@ -30,6 +33,7 @@ from agent import (
     STT_PROFILE_ACCURACY,
     STT_PROFILE_BASELINE,
     STT_PROMPT,
+    TRANSCRIPTION_TIMEOUT_SECONDS,
     TTS_LANGUAGE,
     TTS_PROFILE_BASELINE,
     TTS_PROFILE_RELIABILITY,
@@ -37,6 +41,8 @@ from agent import (
     default_stt_language,
     inference_provider,
     interruption_options,
+    missed_speech_prompt,
+    opening_prompt,
     resolve_stt_profile,
     resolve_tts_expressive,
     resolve_tts_profile,
@@ -233,25 +239,41 @@ def test_other_stt_models_keep_the_turn_detector() -> None:
         assert "endpointing" not in options
 
 
-def test_adaptive_interruption_is_explicitly_pinned() -> None:
-    # The local/self-hosted Console path falls back to VAD unless the mode is
-    # requested explicitly, so these keys are the contract under test.
-    assert INTERRUPTION_MODE_ADAPTIVE == "adaptive"
-    assert INTERRUPTION_MIN_DURATION_SECONDS == 0.5
+def test_vad_interruption_is_explicitly_pinned() -> None:
+    # Native VAD: a short intentional overlap stops playback and is never
+    # reclassified or resumed. No adaptive-only options are part of the contract.
+    assert INTERRUPTION_MODE_VAD == "vad"
+    assert INTERRUPTION_MIN_DURATION_SECONDS == 0.1
     assert INTERRUPTION_MIN_WORDS == 0
-    assert INTERRUPTION_RESUME_FALSE_INTERRUPTION is True
-    assert INTERRUPTION_FALSE_INTERRUPTION_TIMEOUT_SECONDS == 2.0
-    assert INTERRUPTION_BACKCHANNEL_BOUNDARY == (1.0, 1.0)
+    assert INTERRUPTION_RESUME_FALSE_INTERRUPTION is False
+    assert INTERRUPTION_FALSE_INTERRUPTION_TIMEOUT_SECONDS is None
     assert PREEMPTIVE_GENERATION_ENABLED is True
 
     assert interruption_options() == {
-        "mode": "adaptive",
-        "min_duration": 0.5,
+        "mode": "vad",
+        "min_duration": 0.1,
         "min_words": 0,
-        "resume_false_interruption": True,
-        "false_interruption_timeout": 2.0,
-        "backchannel_boundary": (1.0, 1.0),
+        "resume_false_interruption": False,
+        "false_interruption_timeout": None,
     }
+    assert "backchannel_boundary" not in interruption_options()
+
+
+def test_missed_speech_prompt_requires_real_missing_transcript() -> None:
+    # The fixed wording is used only for VAD speech that produced no transcript.
+    assert TRANSCRIPTION_TIMEOUT_SECONDS == 5.0
+    assert MISSED_SPEECH_MIN_DURATION_SECONDS == 0.7
+    assert MISSED_SPEECH_PROMPT == "没听清，请重说。"
+
+    blip = UserTranscriptionTimeoutEvent(
+        speech_duration=0.69, vad_speech_started_at=0.0
+    )
+    assert missed_speech_prompt(blip) is None
+
+    missed = UserTranscriptionTimeoutEvent(
+        speech_duration=0.7, vad_speech_started_at=0.0
+    )
+    assert missed_speech_prompt(missed) == MISSED_SPEECH_PROMPT
 
 
 def test_interruption_is_independent_of_provider_aware_turn_detection() -> None:
@@ -460,11 +482,58 @@ def test_assistant_requires_later_confirmation(monkeypatch: pytest.MonkeyPatch) 
     assert "连续两次" not in instructions
     assert {tool.id for tool in Assistant(FakeFleetbase()).tools} == {
         "prepare_waybill_lookup",
+        "reject_waybill_candidate",
         "lookup_waybill",
         "list_delivery_slots",
         "prepare_reschedule",
         "commit_reschedule",
     }
+
+
+def test_initial_prompt_and_instructions_are_task_minimal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LIVEKIT_API_KEY", "test-api-key")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-api-secret-with-at-least-32-bytes")
+
+    assert INITIAL_PROMPT == "请说要办理的物流事项。"
+    assert opening_prompt("") == INITIAL_PROMPT
+    assert opening_prompt("1") == INTERRUPTION_TEST_PROMPT
+
+    instructions = Assistant(FakeFleetbase()).instructions
+    for phrase in (
+        "一句短句",
+        "一轮只做一个动作",
+        "功能性的“请”",
+        "只回“请说。”",
+        "请重说完整运单号",
+        "只有系统明确提示没有转写时",
+        "不得说“没听清”",
+        "不得与旧候选拼接",
+        "不要说“请问正确吗”",
+    ):
+        assert phrase in instructions
+    # No greeting, empathy or process narration is requested.
+    assert "热情问候" not in instructions
+
+
+def test_waybill_tools_state_their_safe_input_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LIVEKIT_API_KEY", "test-api-key")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-api-secret-with-at-least-32-bytes")
+
+    tools = {tool.id: tool for tool in Assistant(FakeFleetbase()).tools}
+
+    prepare_doc = tools["prepare_waybill_lookup"].info.description
+    assert "当前用户消息" in prepare_doc
+    assert "完整说出" in prepare_doc
+    assert "不得补全" in prepare_doc
+
+    reject_doc = tools["reject_waybill_candidate"].info.description
+    assert "不访问" in reject_doc
+    assert "Fleetbase" in reject_doc
+    assert "请重说完整运单号" in reject_doc
 
 
 @pytest.mark.asyncio
@@ -603,6 +672,50 @@ def test_prepare_waybill_rejects_incomplete_number() -> None:
 
     assert state.pending_waybill is None
     assert MIN_WAYBILL_LENGTH == 8
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Unit words stay unconverted and are not ASCII letters or digits.
+        "一千二百三十四万五千六百七十八",
+        "一二三四五六七八九十",
+        # Mixed ASCII and Chinese digits is likewise never reinterpreted.
+        "1234五六七八",
+    ],
+)
+def test_prepare_waybill_rejects_invalid_format_distinctly(raw) -> None:
+    state = LogisticsSessionState()
+
+    with pytest.raises(FleetbaseConflictError, match="invalid format"):
+        state.prepare_waybill_lookup(raw, "user-1")
+
+    assert state.pending_waybill is None
+
+
+def test_blank_number_is_incomplete_not_a_format_error() -> None:
+    with pytest.raises(FleetbaseConflictError, match="incomplete"):
+        LogisticsSessionState().prepare_waybill_lookup("   ", "user-1")
+
+
+def test_local_correction_rejects_the_old_candidate_without_backend_io() -> None:
+    state = LogisticsSessionState()
+    state.prepare_waybill_lookup("12345678", "user-1")
+    state.record_confirmed_waybill_result("12345678", {"found": True})
+    state.proposals["old-proposal"] = object()
+
+    payload = state.reject_waybill_candidate()
+
+    assert payload["candidate_rejected"] is True
+    assert payload["requires_full_restatement"] is True
+    assert state.pending_waybill is None
+    assert state.confirmed_waybill is None
+    assert state.proposals == {}
+    # Nothing can be looked up or rescheduled from the discarded state.
+    with pytest.raises(FleetbaseConflictError, match="No waybill confirmation"):
+        state.confirm_waybill_lookup("12345678", "user-2")
+    with pytest.raises(FleetbaseConflictError, match="not been confirmed"):
+        state.require_confirmed_waybill("12345678")
 
 
 def test_lookup_requires_an_earlier_prepared_candidate() -> None:

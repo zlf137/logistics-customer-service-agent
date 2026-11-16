@@ -69,11 +69,11 @@ sequenceDiagram
 
 | 层级 | 最近证据 | 边界 |
 | --- | --- | --- |
-| 本地回归 | 47/47、Ruff lint/format、YAML/内部链接与 `git diff --check` 通过（2026-11-15） | 确定性逻辑、配置与作品集文档 |
+| 本地回归 | 55/55、Ruff lint/format、YAML 与 `git diff --check` 通过（2026-11-16） | 确定性逻辑、配置与作品集文档 |
 | 文本 debugger | 混合口述运单先复述，后续确认才精确查询 | 不经过 STT/TTS |
 | LiveKit simulation | 文本 5/5、音频 1/1 曾通过 | 使用合成数据和云端推理 |
 | Fleetbase smoke | 订单命中并返回 3 个时段；默认只读 | 最近一次未提交改约 |
-| 真人 Console | 8 位纯数字流程通过；明确打断约 0.55 秒生效 | 混合运单、backchannel 与背景噪声仍待完整 A/B |
+| 真人 Console | 8 位纯数字流程通过；VAD 短语音打断和后续对话通过 | 混合运单、咳嗽、碰麦与背景噪声仍待完整 A/B |
 
 这些数字是特定版本和小样本证据，不代表通用模型准确率。以当前 checkout 重新运行验证为准。
 
@@ -221,30 +221,26 @@ pins it through `interruption_options()` for every STT provider:
 
 | Option | Value | Why |
 |--------|-------|-----|
-| `mode` | `"adaptive"` | Uses the acoustic interruption detector instead of plain VAD when the detector service is available, so it can distinguish short backchannels such as "嗯" or "好" from a real barge-in. Without this explicit mode the local/self-hosted Console falls back to VAD. |
-| `min_duration` | `0.5` s | Speech shorter than this is not treated as an interruption. |
-| `min_words` | `0` | No additional word-count gate for a short barge-in. |
-| `resume_false_interruption` | `true` | Continues the interrupted reply when the overlap is classified as false. |
-| `false_interruption_timeout` | `2.0` s | Silence after an interruption before it is classified as false. |
-| `backchannel_boundary` | `(1.0, 1.0)` | Suppresses backchannel-classified overlap near the start and end of each agent turn. |
+| `mode` | `"vad"` | Uses the session VAD directly so user speech can stop playback without waiting for a transcript or a hosted adaptive detector. |
+| `min_duration` | `0.1` s | About 100 ms of detected speech is enough to stop the active reply. |
+| `min_words` | `0` | Interruption does not depend on STT recognizing a word or fixed command. |
+| `resume_false_interruption` | `false` | A stopped reply is not resumed, avoiding old and new speech competing after an interruption. |
+| `false_interruption_timeout` | `None` | No silence timer reclassifies the interruption or restarts the old reply. |
 
 Preemptive generation stays enabled (`preemptive_generation={"enabled": True}`),
-unchanged by this work. The adaptive detector is covered by the local dev
-allowance on LiveKit Cloud; self-hosted use past the monthly allowance is
-billed. If the SDK cannot create the detector it logs a warning and falls back
-to VAD, so the session still starts.
+unchanged by this work. User-end detection remains provider-aware: AssemblyAI
+uses its own end-of-turn signal, while other providers retain the LiveKit turn
+detector. This is independent from the VAD signal that stops agent playback.
 
 Unit tests pin these values and the separation from provider-aware turn
-detection. In the 2026-11-13 real-microphone run, the detector initialized
-without VAD fallback and classified “你别说了” as a real interruption after
-about 0.55 seconds (about 0.86 probability); the active reply was marked
-`interrupted`. In a separate 2026-11-15 run, the detector created its session
-but then returned a 0.8-second inference timeout (HTTP 408), so the SDK disabled
-it and fell back to plain VAD. After that fallback, a filler “哎” interrupted
-the waybill read-back. This is availability/fallback evidence, not a successful
-backchannel-suppression result. Background-noise and false-resume A/B remain
-open, and the AssemblyAI `min_turn_silence`/`max_turn_silence` values were
-deliberately not changed in this round.
+detection. Real microphone tests with speaker and headphone output confirmed
+that “嗯”, “喂喂喂”, and other short speech can mark an active reply as
+`interrupted`, after which the agent can continue with a new turn. One
+“喂喂喂” attempt did not interrupt, so very short speech remains timing- and
+segmentation-sensitive. LiveKit's built-in two-second false-interruption resume
+was also tried and then disabled after subjective testing found the resumed
+playback worse than leaving the old reply stopped. Cough, contact-noise, and
+background-speech false-positive A/B remain open.
 
 ### Rollback / A-B: Deepgram Nova-3
 
